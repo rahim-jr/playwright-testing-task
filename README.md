@@ -131,3 +131,29 @@ npm run report
 npm run codegen
 ```
 
+---
+
+## 🧹 Clearing Previous Work & Cache
+
+To clear artifacts, test reports, browser session data, or previous seat locks:
+
+### 1. Clear Previous Test Artifacts & Browser Profile:
+Cleans `test-results/`, `playwright-report/`, log files, and `/tmp/railway-chrome-user-data`:
+```bash
+npm run clear
+# or
+npm run clean
+```
+
+### 2. Clear Previous Seat Selections and Select Fresh Middle Seats:
+If seats were selected in a previous run and are locked in your cart, clear them and book fresh middle seats:
+```bash
+npm run book:clear
+```
+
+### 3. Clear / Release Locked Seats in Cart Only:
+If you want to unselect and release locked seats without booking new ones:
+```bash
+npm run clear:seats
+```
+

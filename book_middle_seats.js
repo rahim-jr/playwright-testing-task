@@ -124,16 +124,41 @@ dotenv.config({ path: path.resolve(__dirname, '.env') });
     }
 
     // 4. Check currently selected seats in cart
-    const alreadySelected = await page.$$eval(
+    let alreadySelected = await page.$$eval(
       '.selected-seats-list .single-selected-seat-btn, button.btn-seat.seat-selected',
       els => els.map(e => e.innerText.trim()).filter(Boolean)
     ).catch(() => []);
     console.log(`🛒 Currently selected seats in cart (${alreadySelected.length}):`, alreadySelected);
 
+    const shouldClear = process.argv.includes('--clear') || process.env.CLEAR_PREVIOUS === 'true';
+
+    if (shouldClear && alreadySelected.length > 0) {
+      console.log(`🧹 Clearing ${alreadySelected.length} previously selected seat(s) from previous work: [${alreadySelected.join(', ')}]...`);
+      const removeButtons = page.locator('.selected-seats-list button, .selected-seats-list .single-selected-seat-btn, button.btn-seat.seat-selected');
+      const count = await removeButtons.count();
+      for (let i = 0; i < count; i++) {
+        try {
+          const btn = removeButtons.first();
+          if (await btn.isVisible()) {
+            await btn.click().catch(() => {});
+            await page.waitForTimeout(600);
+          }
+        } catch {}
+      }
+      await page.waitForTimeout(1000);
+
+      alreadySelected = await page.$$eval(
+        '.selected-seats-list .single-selected-seat-btn, button.btn-seat.seat-selected',
+        els => els.map(e => e.innerText.trim()).filter(Boolean)
+      ).catch(() => []);
+      console.log(`🛒 Seats in cart after clearing: ${alreadySelected.length}`);
+    }
+
     const neededCount = Math.max(0, 4 - alreadySelected.length);
 
     if (neededCount === 0) {
       console.log('🎉 Maximum 4 tickets are ALREADY selected in your cart!');
+      console.log('💡 Tip: Run "npm run book:clear" to clear previous selections and pick fresh middle seats.');
     } else {
       // Locate all available free seats in the coach
       const availableSeatNames = await page.$$eval(

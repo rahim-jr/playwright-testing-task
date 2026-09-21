@@ -5,7 +5,11 @@
   "scripts": {
     "test": "playwright test",
     "demo": "node demo_browser.js",
+    "clean": "node utils/clean.js",
+    "clear": "npm run clean",
+    "clear:seats": "node clear_selected_seats.js",
     "book:middle": "node book_middle_seats.js",
+    "book:clear": "node book_middle_seats.js --clear",
     "test:login": "playwright test tests/login.spec.ts",
     "test:booking": "playwright test tests/booking.spec.ts",
     "test:coxsbazar": "HEADLESS=false SLOWMO=500 playwright test tests/seatSelection.spec.ts --headed",
