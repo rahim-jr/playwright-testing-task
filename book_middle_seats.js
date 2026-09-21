@@ -66,7 +66,46 @@ dotenv.config({ path: path.resolve(__dirname, '.env') });
 
     console.log(`🚂 Searching route: ${fromCity} -> ${toCity} on ${journeyDate}...`);
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('.single-trip-wrapper', { timeout: 15000 });
+
+    // Human-like resilience: If the site is under heavy traffic, retry search without retyping info
+    let trainsLoaded = false;
+    let searchAttempt = 0;
+    const MAX_SEARCH_RETRIES = 5;
+
+    while (!trainsLoaded && searchAttempt < MAX_SEARCH_RETRIES) {
+      searchAttempt++;
+      try {
+        console.log(`⏳ Waiting for train results to load (Attempt ${searchAttempt}/${MAX_SEARCH_RETRIES})...`);
+        await page.waitForSelector('.single-trip-wrapper', { timeout: 10000 });
+        trainsLoaded = true;
+        console.log(`✅ Train search results loaded successfully!`);
+      } catch (err) {
+        if (searchAttempt < MAX_SEARCH_RETRIES) {
+          console.log(`⚠️ Site under heavy load or slow response. Retrying search without retyping information (human-like refresh)...`);
+
+          // Dismiss any popup/SweetAlert error if present
+          if (await page.locator('.swal2-container').isVisible().catch(() => false)) {
+            const alertText = await page.locator('.swal2-title').innerText().catch(() => '');
+            console.log(`   Dismissing portal alert: "${alertText}"`);
+            await page.locator('button.swal2-confirm, button:has-text("OKAY"), button:has-text("OK")').first().click().catch(() => {});
+            await page.waitForTimeout(500);
+          }
+
+          // Click search button if available on page to re-trigger search without changing inputs
+          const reSearchBtn = page.locator('.railway-ticket-search-submit-btn button, button:has-text("FIND TICKETS"), button:has-text("MODIFY SEARCH"), button.search-box-btn').first();
+          if (await reSearchBtn.isVisible().catch(() => false)) {
+            console.log('   👉 Clicking "FIND TICKETS / MODIFY SEARCH" button...');
+            await reSearchBtn.click().catch(() => {});
+          } else {
+            console.log('   🔄 Refreshing search page URL...');
+            await page.goto(searchUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+          }
+          await page.waitForTimeout(2000); // 2s pause like a real human user
+        } else {
+          throw new Error(`Server did not return train results after ${MAX_SEARCH_RETRIES} attempts. Site may be experiencing downtime or extreme load.`);
+        }
+      }
+    }
 
     // 3. Find the first train card with an available 'BOOK NOW' button
     const bookNowBtn = page.locator('button.book-now-btn').first();
