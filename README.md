@@ -1,4 +1,6 @@
-# Bangladesh Railway E-Ticketing SQA Automation Suite (`ticketbycheck`)
+# playwright-testing-task
+
+## Bangladesh Railway E-Ticketing SQA Automation Suite (`ticketbycheck`)
 
 Automated SQA testing framework and seat booking script built with **Playwright (TypeScript / Node.js)** for the Bangladesh Railway e-ticket portal: [`https://eticket.railway.gov.bd`](https://eticket.railway.gov.bd).
 
