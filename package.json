@@ -1,0 +1,34 @@
+{
+  "name": "ticketbycheck",
+  "version": "1.0.0",
+  "description": "Automated ticket booking and verification test suite using Playwright for Bangladesh Railway e-ticket portal",
+  "scripts": {
+    "test": "playwright test",
+    "demo": "node demo_browser.js",
+    "book:middle": "node book_middle_seats.js",
+    "test:login": "playwright test tests/login.spec.ts",
+    "test:booking": "playwright test tests/booking.spec.ts",
+    "test:coxsbazar": "HEADLESS=false SLOWMO=500 playwright test tests/seatSelection.spec.ts --headed",
+    "test:headed": "HEADLESS=false playwright test --headed",
+    "test:watch": "HEADLESS=false SLOWMO=600 playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:debug": "playwright test --debug",
+    "report": "playwright show-report",
+    "codegen": "playwright codegen https://eticket.railway.gov.bd/login"
+  },
+  "keywords": [
+    "playwright",
+    "testing",
+    "sqa",
+    "automation",
+    "railway"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "@types/node": "^22.0.0",
+    "dotenv": "^16.4.7",
+    "typescript": "^5.7.0"
+  }
+}
