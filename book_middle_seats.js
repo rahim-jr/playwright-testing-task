@@ -206,17 +206,23 @@ dotenv.config({ path: path.resolve(__dirname, '.env') });
       console.log('✅ "CONTINUE PURCHASE" button is ACTIVE and ready to proceed.');
     }
 
-    console.log('🖥️ Keeping browser open for 60 seconds so you can observe the selection on screen...');
-    await page.waitForTimeout(60000);
+    console.log('🖥️ Seats selected! The browser will stay open indefinitely.');
+    console.log('👉 You can now interact with the page, proceed, or manually close the browser window when finished.');
+
+    // Wait indefinitely until the user manually closes the page or browser
+    await new Promise(resolve => {
+      page.on('close', resolve);
+      context.on('close', resolve);
+    });
+    console.log('ℹ️ Browser window was closed manually by user. Exiting cleanly.');
   } catch (err) {
     if (err.message && (err.message.includes('Target page, context or browser has been closed') || err.message.includes('browser has been closed'))) {
-      console.log('ℹ️ Browser window was closed by user. Exiting cleanly.');
+      console.log('ℹ️ Browser window was closed manually by user. Exiting cleanly.');
     } else {
       console.error('An error occurred during execution:', err.message);
     }
   } finally {
     if (context) {
-      console.log('Closing browser session.');
       await context.close().catch(() => {});
     }
   }
