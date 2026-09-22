@@ -239,7 +239,18 @@ async function performFreshLogin(page) {
               const blockText = (await parentClassBlock.innerText().catch(() => '')).replace(/\s+/g, ' ');
               const numMatch = blockText.match(/(\d+)\s*(?:seat|available)?/i);
               const seatCount = numMatch ? parseInt(numMatch[1], 10) : 0;
-              const preferredRank = preferredClasses.findIndex(cls => blockText.toUpperCase().includes(cls));
+              const upperBlock = blockText.toUpperCase();
+              const preferredRank = preferredClasses.findIndex(cls => {
+                const normCls = cls.toUpperCase();
+                if (upperBlock.includes(normCls)) return true;
+                if (normCls === 'S_CHAIR') {
+                  return upperBlock.includes('S CHAIR') || upperBlock.includes('S-CHAIR') || upperBlock.includes('SHOVAN CHAIR') || upperBlock.includes('SHOVON CHAIR');
+                }
+                if (normCls === 'F_SEAT') {
+                  return upperBlock.includes('F SEAT') || upperBlock.includes('F-SEAT') || upperBlock.includes('FIRST SEAT');
+                }
+                return false;
+              });
               const isPreferred = preferredRank !== -1;
 
               candidates.push({
