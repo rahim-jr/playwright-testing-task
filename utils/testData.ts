@@ -11,5 +11,6 @@ export const config = {
   toStation: process.env.TO_STATION || 'Chattogram',
   journeyDate: process.env.JOURNEY_DATE || '',
   journeyClass: process.env.JOURNEY_CLASS || 'SNIGDHA',
+  trainNumber: process.env.TRAIN_NUMBER || '',
   headless: process.env.HEADLESS !== 'false',
 };

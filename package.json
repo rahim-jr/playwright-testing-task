@@ -10,6 +10,8 @@
     "clear:seats": "node clear_selected_seats.js",
     "book:middle": "node book_middle_seats.js",
     "book:clear": "node book_middle_seats.js --clear",
+    "book:watch": "node book_middle_seats.js --watch",
+    "book:snipe": "node book_middle_seats.js --watch --clear",
     "test:login": "playwright test tests/login.spec.ts",
     "test:booking": "playwright test tests/booking.spec.ts",
     "test:coxsbazar": "HEADLESS=false SLOWMO=500 playwright test tests/seatSelection.spec.ts --headed",

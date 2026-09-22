@@ -67,26 +67,40 @@ JOURNEY_CLASS=SNIGDHA
 
 ---
 
-## 🎯 Running Automated Seat Booking (Middle Seats First)
+## 🎯 Running Automated Seat Booking (Unified Instant Book + Auto-Watchdog)
 
-To run the automated seat booking flow that prioritizes **middle seats** and strictly enforces the **4-seat limit**:
+`book:middle` and `book:watch` are now **merged into one unified smart command**:
+* **If tickets are already available:** It selects the maximum-seat coach and books the 4 middle seats immediately.
+* **If tickets are NOT yet released (0 seats / sold out / pre-drop):** It **automatically transitions into Watchdog Mode**, monitoring the search page (every 5–8s with jitter) until tickets drop or unpaid holds release, and then snipes them with audible & desktop alerts!
 
+### 1. Unified Seat Booking & Auto-Sniper (Headed Mode):
 ```bash
 npm run book:middle
 ```
 
-### What this script does:
-1. Opens Chromium in visible headed mode with persistent session context (bypasses Cloudflare Turnstile).
-2. Authenticates automatically if not already logged in.
-3. Searches for trains for the given route and date.
-4. Clicks **"BOOK NOW"** on the first available train.
-5. Inspects currently selected seats in cart: `needed = 4 - alreadySelected.length`.
-6. Calculates the center indices of available coach seats to select up to 4 **middle seats first**.
-7. Gracefully handles SweetAlert dialogs and validates the **"CONTINUE PURCHASE"** button.
-8. Keeps the browser open for 60 seconds for visual verification (exits cleanly if manually closed).
+### 2. Clear Previous Work & Run Unified Booking:
+```bash
+npm run book:clear
+```
+
+### 🛠️ What the Automation Does:
+1. **Pre-Login / Session Warm-up:** Logs in automatically ahead of ticket drops using persistent Chrome context (`/tmp/railway-chrome-user-data`).
+2. **Continuous Monitoring (Watchdog Loop):** Periodically re-queries the search page with human-like jitter (5–8s) to avoid Cloudflare rate limiting until tickets appear.
+3. **Instant Snipe (The exact second tickets drop):**
+   - Fires **audible system chimes** and urgent **Linux desktop notifications** (`notify-send`).
+   - Prioritizes the train/class with the **maximum available seats**.
+   - Clicks **"BOOK NOW"** in milliseconds.
+4. **Coach Inventory Scanner (Max to Min):**
+   - Scans and ranks all coach buttons (e.g. *KA*, *KHA*, *GA*) by free seat count.
+   - Targets the coach with the highest seat inventory first.
+5. **Middle-Outward Seat Selection:**
+   - Calculates the center seat index and expands symmetrically (`mid`, `mid + offset`, `mid - offset - 1`).
+6. **Multi-Coach Fallback in a Single Session:**
+   - If the top coach has fewer than 4 seats, selects available middle seats in that coach, and seamlessly switches to the 2nd best coach in the same session to complete the 4 tickets.
+7. **Hands over to User:** Keeps the browser open indefinitely at the active **"CONTINUE PURCHASE"** screen so you have the full 15-minute window to enter passenger details and pay.
 
 > ⚠️ **Note on the 15-Minute Seat Lock:**  
-> When seats are selected, Bangladesh Railway (Shohoz) locks them to your account for **15 minutes**. If 4 seats are locked from a previous run, the server will reject further selections until the 15 minutes expire or you unselect them by clicking the green selected seat again.
+> When seats are selected, Bangladesh Railway (Shohoz) locks them to your account for **15 minutes**. If 4 seats are locked from a previous run, run `npm run book:clear` or `npm run clear:seats` to release them.
 
 ---
 

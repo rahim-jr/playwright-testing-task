@@ -93,4 +93,69 @@ test.describe('Dhaka to Cox\'s Bazar - Train Ticket & Seat Selection Test (Max 4
 
     console.log('SQA Validation Passed: Up to 4 tickets successfully selected in available coach.');
   });
+
+  test('TC-SEAT03 - Configurable Multi-Coach & Middle-Seat Booking from .env (Playwright UI Compatible)', async ({ page }) => {
+    const hasCredentials = config.mobileNumber && config.password && !config.mobileNumber.includes('XXXX');
+    test.skip(!hasCredentials, 'Please supply credentials in ticketbycheck/.env to execute live seat selection.');
+
+    const fromStation = config.fromStation || 'Dhaka';
+    const toStation = config.toStation || 'Kishorganj';
+    const seatClass = config.journeyClass || 'SNIGDHA';
+
+    console.log(`Testing configurable booking: ${fromStation} -> ${toStation} (Class: ${seatClass}, Train: ${config.trainNumber || 'Any'})`);
+
+    // 1. Perform search
+    await searchPage.fillSearchForm({
+      from: fromStation,
+      to: toStation,
+      seatClass: seatClass,
+    });
+
+    await searchPage.clickSearch();
+
+    // 2. Handle login modal if unauthenticated or session expired
+    if (await searchPage.isLoginModalVisible(4000)) {
+      console.log('Login modal prompted upon search. Auto-submitting credentials...');
+      await searchPage.loginModalMobileInput.fill(config.mobileNumber);
+      await searchPage.loginModalPasswordInput.fill(config.password);
+
+      if (await searchPage.loginModalSubmitBtn.isEnabled()) {
+        await searchPage.loginModalSubmitBtn.click();
+      }
+    }
+
+    const onSearchResults = await searchPage.waitForSearchResults(10000);
+    if (!onSearchResults) {
+      console.log('Awaiting search results or route availability...');
+      return;
+    }
+
+    // 3. Match train by TRAIN_NUMBER if specified, or pick first available train
+    const trainList = await seatPage.getAvailableTrainNames();
+    console.log(`Available trains found: ${JSON.stringify(trainList)}`);
+    expect(trainList.length).toBeGreaterThan(0);
+
+    let targetTrain = trainList[0];
+    if (config.trainNumber) {
+      const matched = trainList.find(t => t.includes(config.trainNumber));
+      if (matched) targetTrain = matched;
+    }
+
+    // 4. Click BOOK NOW
+    await seatPage.clickBookNow({
+      trainName: targetTrain,
+      seatClass: seatClass,
+    });
+
+    // 5. Select middle seats across best coaches (Greedy strategy)
+    const selectedSeats = await seatPage.selectSeatsAcrossBestCoaches(4);
+    console.log(`Selected middle seats: ${JSON.stringify(selectedSeats)}`);
+    expect(selectedSeats.length).toBeGreaterThan(0);
+    expect(selectedSeats.length).toBeLessThanOrEqual(4);
+
+    // 6. Verify Continue button is active
+    const canContinue = await seatPage.isContinueButtonEnabled();
+    expect(canContinue).toBeTruthy();
+    console.log('SQA Validation Passed: Middle seats selected across top coaches via Playwright UI.');
+  });
 });

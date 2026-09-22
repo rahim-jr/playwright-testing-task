@@ -115,7 +115,10 @@ export class SearchPage extends BasePage {
    * Select seat class
    */
   async selectClass(seatClass: string): Promise<void> {
-    await this.classSelect.selectOption(seatClass);
+    const primaryClass = seatClass.includes(',') ? seatClass.split(',')[0].trim() : seatClass.trim();
+    if (primaryClass) {
+      await this.classSelect.selectOption(primaryClass);
+    }
   }
 
   /**
