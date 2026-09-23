@@ -13,4 +13,5 @@ export const config = {
   journeyClass: process.env.JOURNEY_CLASS || 'SNIGDHA',
   trainNumber: process.env.TRAIN_NUMBER || '',
   headless: process.env.HEADLESS !== 'false',
+  refreshSecond: parseInt(process.env.REFRESH_SECOND || '1', 10),
 };

@@ -237,8 +237,19 @@ async function performFreshLogin(page) {
             if (await btn.isVisible().catch(() => false)) {
               const parentClassBlock = btn.locator('xpath=./ancestor::*[contains(@class, "single-seat-class") or contains(@class, "seat-class")]').first();
               const blockText = (await parentClassBlock.innerText().catch(() => '')).replace(/\s+/g, ' ');
-              const numMatch = blockText.match(/(\d+)\s*(?:seat|available)?/i);
-              const seatCount = numMatch ? parseInt(numMatch[1], 10) : 0;
+              // Extract available seats, ignoring fare amounts (e.g. ৳754)
+              let seatCount = 0;
+              const onlineMatch = blockText.match(/online\s*[:\-]?\s*(\d+)/i);
+              const availTicketsMatch = blockText.match(/available\s*tickets?\s*\(?(?:[^0-9]*counter\s*[:\-]?\s*\d+\s*,\s*)?(?:online\s*[:\-]?\s*)?(\d+)/i);
+              const seatsAvailMatch = blockText.match(/(\d+)\s+seats?\s+available/i);
+              if (onlineMatch) {
+                seatCount = parseInt(onlineMatch[1], 10);
+              } else if (availTicketsMatch) {
+                seatCount = parseInt(availTicketsMatch[1], 10);
+              } else if (seatsAvailMatch) {
+                seatCount = parseInt(seatsAvailMatch[1], 10);
+              }
+
               const upperBlock = blockText.toUpperCase();
               const preferredRank = preferredClasses.findIndex(cls => {
                 const normCls = cls.toUpperCase();
@@ -266,32 +277,21 @@ async function performFreshLogin(page) {
         }
       }
 
-      // Check if any candidates with available seats are ready
-      if (candidates.length > 0) {
-        candidates.sort((a, b) => {
-          // If both have seats available:
-          if (a.seatCount > 0 && b.seatCount > 0) {
-            // Prioritize by preferred class order (e.g. SNIGDHA rank 0 > F_SEAT rank 1)
-            if (a.preferredRank !== b.preferredRank) {
-              return a.preferredRank - b.preferredRank;
-            }
-            // If same class rank, pick whichever has more available seats
-            return b.seatCount - a.seatCount;
-          }
-          // If only one candidate has seats, pick it immediately
-          if (a.seatCount > 0) return -1;
-          if (b.seatCount > 0) return 1;
-
-          // If neither has seats, sort by preferred class order
+      // Check if any candidates with available seats are ready (> 0 seats)
+      const availableCandidates = candidates.filter(c => c.seatCount > 0);
+      if (availableCandidates.length > 0) {
+        availableCandidates.sort((a, b) => {
+          // Prioritize by preferred class order (e.g. SNIGDHA rank 0 > F_SEAT rank 1)
           if (a.preferredRank !== b.preferredRank) {
             return a.preferredRank - b.preferredRank;
           }
-          return 0;
+          // If same class rank, pick whichever has more available seats
+          return b.seatCount - a.seatCount;
         });
 
-        const best = candidates[0];
+        const best = availableCandidates[0];
         selectedBookNowBtn = best.btn;
-        selectedTrainDescription = `${best.trainTitle} [${best.blockText}] (${best.seatCount > 0 ? best.seatCount + ' seats' : 'available'})`;
+        selectedTrainDescription = `${best.trainTitle} [${best.blockText}] (${best.seatCount} seats)`;
 
         if (checkIteration === 1) {
           console.log(`\n⚡ Tickets immediately available! Target: ${selectedTrainDescription}`);
@@ -320,10 +320,9 @@ async function performFreshLogin(page) {
         break;
       }
 
-      // Polling interval with jitter (2s - 4s)
-      const minMs = parseInt(process.env.REFRESH_MIN_SECONDS || '2', 10) * 1000;
-      const maxMs = parseInt(process.env.REFRESH_MAX_SECONDS || '4', 10) * 1000;
-      const jitterMs = Math.floor(Math.random() * Math.max(1, maxMs - minMs)) + minMs;
+      // Polling interval (default 1s)
+      const refreshSec = parseFloat(process.env.REFRESH_SECOND || process.env.REFRESH_MIN_SECONDS || '1');
+      const refreshMs = Math.max(100, Math.round(refreshSec * 1000));
 
       const nowStr = new Date().toLocaleTimeString();
       if (checkIteration === 1) {
@@ -334,8 +333,8 @@ async function performFreshLogin(page) {
         console.log(`👀 Automatically entering Watchdog Mode: Monitoring until seats release or unpaid holds expire...`);
       }
       const targetLabel = targetTrainNumber ? `Train #${targetTrainNumber}` : `route`;
-      console.log(`[${nowStr}] 🔍 Monitoring ${targetLabel} (Check #${checkIteration}). Next refresh in ${(jitterMs / 1000).toFixed(1)}s...`);
-      await page.waitForTimeout(jitterMs);
+      console.log(`[${nowStr}] 🔍 Monitoring ${targetLabel} (Check #${checkIteration}). Next refresh in ${(refreshMs / 1000).toFixed(1)}s...`);
+      await page.waitForTimeout(refreshMs);
 
       // Re-query search results (Human-like: click Search button or reload)
       try {
