@@ -229,69 +229,87 @@ async function performFreshLogin(page) {
             if (!matchesTrain) continue;
           }
 
-          const bookBtns = trip.locator('button.book-now-btn, button:has-text("BOOK NOW"), button:has-text("BOOK")');
-          const bCount = await bookBtns.count();
+          const classBlocks = trip.locator('.single-seat-class');
+          const cCount = await classBlocks.count();
 
-          for (let j = 0; j < bCount; j++) {
-            const btn = bookBtns.nth(j);
-            if (await btn.isVisible().catch(() => false)) {
-              const parentClassBlock = btn.locator('xpath=./ancestor::*[contains(@class, "single-seat-class") or contains(@class, "seat-class")]').first();
-              const blockText = (await parentClassBlock.innerText().catch(() => '')).replace(/\s+/g, ' ');
-              // Extract available seats, ignoring fare amounts (e.g. ৳754)
-              let seatCount = 0;
-              const onlineMatch = blockText.match(/online\s*[:\-]?\s*(\d+)/i);
-              const availTicketsMatch = blockText.match(/available\s*tickets?\s*\(?(?:[^0-9]*counter\s*[:\-]?\s*\d+\s*,\s*)?(?:online\s*[:\-]?\s*)?(\d+)/i);
-              const seatsAvailMatch = blockText.match(/(\d+)\s+seats?\s+available/i);
-              if (onlineMatch) {
-                seatCount = parseInt(onlineMatch[1], 10);
-              } else if (availTicketsMatch) {
-                seatCount = parseInt(availTicketsMatch[1], 10);
-              } else if (seatsAvailMatch) {
-                seatCount = parseInt(seatsAvailMatch[1], 10);
-              }
+          for (let j = 0; j < cCount; j++) {
+            const block = classBlocks.nth(j);
+            const btn = block.locator('button.book-now-btn, button:has-text("BOOK NOW")').first();
+            if (!(await btn.isVisible().catch(() => false))) continue;
 
-              const upperBlock = blockText.toUpperCase();
-              const preferredRank = preferredClasses.findIndex(cls => {
-                const normCls = cls.toUpperCase();
-                if (upperBlock.includes(normCls)) return true;
-                if (normCls === 'S_CHAIR') {
-                  return upperBlock.includes('S CHAIR') || upperBlock.includes('S-CHAIR') || upperBlock.includes('SHOVAN CHAIR') || upperBlock.includes('SHOVON CHAIR');
-                }
-                if (normCls === 'F_SEAT') {
-                  return upperBlock.includes('F SEAT') || upperBlock.includes('F-SEAT') || upperBlock.includes('FIRST SEAT');
-                }
-                return false;
-              });
-              const isPreferred = preferredRank !== -1;
+            const isDisabled = await btn.getAttribute('disabled');
+            if (isDisabled !== null) continue;
 
-              candidates.push({
-                btn,
-                trainTitle: trainTitle || `Train #${i + 1}`,
-                blockText: blockText.slice(0, 35),
-                seatCount,
-                isPreferred,
-                preferredRank: isPreferred ? preferredRank : 999
-              });
+            const blockText = (await block.innerText().catch(() => '')).replace(/\s+/g, ' ');
+            const upperBlock = blockText.toUpperCase();
+
+            // Parse seat count if present, e.g. "Online: 70", "Available Tickets (Counter + Online) 141", "Available Tickets (141)"
+            let seatCount = 1;
+            const onlineMatch = blockText.match(/online\s*[:\-]?\s*(\d+)/i);
+            const totalAvailMatch = blockText.match(/available\s*tickets?\s*(?:\([^)]*\))?\s*(\d+)/i);
+            const availTicketsMatch = blockText.match(/available\s*tickets?\s*\(?(?:[^0-9]*counter\s*[:\-]?\s*\d+\s*,\s*)?(?:online\s*[:\-]?\s*)?(\d+)/i);
+            if (onlineMatch) {
+              seatCount = parseInt(onlineMatch[1], 10);
+            } else if (totalAvailMatch) {
+              seatCount = parseInt(totalAvailMatch[1], 10);
+            } else if (availTicketsMatch) {
+              seatCount = parseInt(availTicketsMatch[1], 10);
             }
+
+            // If online tickets are explicitly 0, skip this sold-out class
+            if (onlineMatch && seatCount === 0) continue;
+            if (upperBlock.includes('ONLINE: 0') || upperBlock.includes('ONLINE:0') || upperBlock.includes('AVAILABLE TICKETS (COUNTER: 0, ONLINE: 0)')) {
+              continue;
+            }
+
+            const preferredRank = preferredClasses.findIndex(cls => {
+              const normCls = cls.toUpperCase();
+              if (upperBlock.includes(normCls)) return true;
+              if (normCls === 'S_CHAIR') {
+                return upperBlock.includes('S CHAIR') || upperBlock.includes('S-CHAIR') || upperBlock.includes('SHOVAN CHAIR') || upperBlock.includes('SHOVON CHAIR');
+              }
+              if (normCls === 'F_SEAT') {
+                return upperBlock.includes('F SEAT') || upperBlock.includes('F-SEAT') || upperBlock.includes('FIRST SEAT');
+              }
+              return false;
+            });
+            const isPreferred = preferredRank !== -1;
+
+            console.log(`   🔎 Evaluated class: "${blockText.slice(0, 25)}" | seats: ${seatCount} | rank: ${preferredRank} | preferred: ${isPreferred}`);
+
+            candidates.push({
+              btn,
+              trainTitle: trainTitle || `Train #${i + 1}`,
+              blockText: blockText.slice(0, 35),
+              seatCount,
+              isPreferred,
+              preferredRank: isPreferred ? preferredRank : 999
+            });
           }
         }
       }
 
-      // Check if any candidates with available seats are ready (> 0 seats)
-      const availableCandidates = candidates.filter(c => c.seatCount > 0);
-      if (availableCandidates.length > 0) {
-        availableCandidates.sort((a, b) => {
-          // Prioritize by preferred class order (e.g. SNIGDHA rank 0 > F_SEAT rank 1)
+      console.log('📋 All parsed candidates:', candidates.map(c => ({ class: c.blockText.slice(0, 15), seats: c.seatCount, rank: c.preferredRank })));
+
+      // Check if any candidates with available seats are ready
+      if (candidates.length > 0) {
+        candidates.sort((a, b) => {
+          // Prioritize classes that actually have seats available (> 0)
+          const aHas = a.seatCount > 0;
+          const bHas = b.seatCount > 0;
+          if (aHas && !bHas) return -1;
+          if (!aHas && bHas) return 1;
+
+          // If both have seats: strictly prioritize preferred class order from .env
           if (a.preferredRank !== b.preferredRank) {
             return a.preferredRank - b.preferredRank;
           }
-          // If same class rank, pick whichever has more available seats
           return b.seatCount - a.seatCount;
         });
 
-        const best = availableCandidates[0];
+        const best = candidates[0];
         selectedBookNowBtn = best.btn;
-        selectedTrainDescription = `${best.trainTitle} [${best.blockText}] (${best.seatCount} seats)`;
+        selectedTrainDescription = `${best.trainTitle} [${best.blockText}] (${best.seatCount > 0 ? best.seatCount + ' seats' : 'available'})`;
 
         if (checkIteration === 1) {
           console.log(`\n⚡ Tickets immediately available! Target: ${selectedTrainDescription}`);
@@ -305,12 +323,7 @@ async function performFreshLogin(page) {
 
       // No tickets available right now
       if (singleCheckOnly) {
-        console.log('\n⚠️ No active seats available right now (single-check requested).');
-        console.log('🖥️ Keeping browser open for manual review.');
-        await new Promise(resolve => {
-          page.on('close', resolve);
-          context.on('close', resolve);
-        });
+        console.log('\n⚠️ No active seats available right now (single-check requested). Auto-closing cleanly.');
         return;
       }
 
@@ -391,30 +404,58 @@ async function performFreshLogin(page) {
       await page.waitForTimeout(500);
     }
 
-    // 5. Check currently selected seats in cart
+    // 5. Wait for the seat layout and coach container to fully expand
+    console.log('⏳ Awaiting seat layout and coaches to load...');
+    await page.waitForSelector('.seat-layout-container, .all-coach, button.seat-floor-btn, button.btn-seat', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(1000);
+
+    // Check currently selected seats in cart
     let alreadySelected = await page.$$eval(
-      '.selected-seats-list .single-selected-seat-btn, button.btn-seat.seat-selected',
+      '.selected-seats-list .single-selected-seat-btn, button.btn-seat.seat-selected, #tbl_price_details tbody tr td:nth-child(2)',
       els => els.map(e => e.innerText.trim()).filter(Boolean)
     ).catch(() => []);
     console.log(`🛒 Currently selected seats in cart (${alreadySelected.length}):`, alreadySelected);
 
     if (shouldClear && alreadySelected.length > 0) {
       console.log(`🧹 Clearing ${alreadySelected.length} previously selected seat(s) from cart: [${alreadySelected.join(', ')}]...`);
-      const removeButtons = page.locator('.selected-seats-list button, .selected-seats-list .single-selected-seat-btn, button.btn-seat.seat-selected');
-      const count = await removeButtons.count();
-      for (let i = 0; i < count; i++) {
+      // 1. Click any seat-selected buttons in the current layout
+      const selectedSeatBtns = page.locator('button.btn-seat.seat-selected, button.btn-seat[class*="selected"]');
+      let sCount = await selectedSeatBtns.count();
+      for (let i = 0; i < sCount; i++) {
         try {
-          const btn = removeButtons.first();
-          if (await btn.isVisible()) {
-            await btn.click().catch(() => {});
-            await page.waitForTimeout(500);
-          }
+          await selectedSeatBtns.first().click().catch(() => {});
+          await page.waitForTimeout(400);
         } catch {}
       }
-      await page.waitForTimeout(800);
+
+      // 2. If seats from other coaches are in cart, switch to those coaches to deselect
+      const bogieSelect = page.locator('#select-bogie, select.selectpicker, .bogie-selection select').first();
+      if (await bogieSelect.isVisible().catch(() => false)) {
+        const remainingTableSeats = await page.$$eval('#tbl_price_details tbody tr td:nth-child(2)', els => els.map(e => e.innerText.trim()).filter(Boolean)).catch(() => []);
+        for (const seatName of remainingTableSeats) {
+          const coachPrefix = seatName.split('-')[0];
+          const options = await bogieSelect.locator('option').all();
+          for (const opt of options) {
+            const optText = await opt.innerText();
+            const optVal = await opt.getAttribute('value');
+            if (new RegExp(`^${coachPrefix}\\b`, 'i').test(optText) && optVal !== null) {
+              await bogieSelect.selectOption(optVal).catch(() => {});
+              await page.waitForTimeout(1000);
+              const coachSelectedBtns = page.locator('button.btn-seat.seat-selected, button.btn-seat[class*="selected"]');
+              const cCount = await coachSelectedBtns.count();
+              for (let k = 0; k < cCount; k++) {
+                await coachSelectedBtns.first().click().catch(() => {});
+                await page.waitForTimeout(400);
+              }
+              break;
+            }
+          }
+        }
+      }
+      await page.waitForTimeout(1000);
 
       alreadySelected = await page.$$eval(
-        '.selected-seats-list .single-selected-seat-btn, button.btn-seat.seat-selected',
+        '.selected-seats-list .single-selected-seat-btn, button.btn-seat.seat-selected, #tbl_price_details tbody tr td:nth-child(2)',
         els => els.map(e => e.innerText.trim()).filter(Boolean)
       ).catch(() => []);
       console.log(`🛒 Seats in cart after clearing: ${alreadySelected.length}`);
@@ -426,60 +467,80 @@ async function performFreshLogin(page) {
       console.log('🎉 Maximum 4 tickets are ALREADY selected in your cart!');
       console.log('💡 Tip: Run with "--clear" to clear previous selections and pick fresh middle seats.');
     } else {
-      // 6. Scan Coaches to rank by Maximum Available Seats (Greedy Strategy)
-      const coachButtons = page.locator('button.seat-floor-btn, .all-coach button, button.btn-coach, .coach-selection-btn, button[class*="coach"]');
-      const coachCount = await coachButtons.count();
+      // 6. Scan Coaches to rank by Maximum Available Seats (Supports both bogie dropdown and coach buttons)
+      const bogieSelect = page.locator('#select-bogie, select.selectpicker, .bogie-selection select').first();
+      const hasBogieSelect = await bogieSelect.isVisible({ timeout: 6000 }).catch(() => false);
 
       let coaches = [];
 
-      if (coachCount > 0) {
-        console.log(`🔍 Scanning all ${coachCount} coaches to rank by available seat inventory (Max to Min)...`);
-        for (let i = 0; i < coachCount; i++) {
-          const cBtn = coachButtons.nth(i);
-          const rawName = (await cBtn.innerText().catch(() => '')).trim();
-
-          await cBtn.click().catch(() => {});
-          await page.waitForTimeout(350);
-
-          if (await page.locator('.swal2-container').isVisible().catch(() => false)) {
-            await page.locator('button.swal2-confirm, button:has-text("OKAY"), button:has-text("OK")').first().click().catch(() => {});
-            await page.waitForTimeout(300);
-          }
-
-          const freeSeats = await page.$$eval(
-            'button.btn-seat.seat-available:not([disabled]):not(.seat-booked):not(.sleeper-gray)',
-            els => els.map(e => e.getAttribute('title') || e.innerText.trim()).filter(Boolean)
-          ).catch(() => []);
-
+      if (hasBogieSelect) {
+        console.log('🔍 Coach selection detected via bogie dropdown (#select-bogie). Parsing options...');
+        const options = await bogieSelect.locator('option').all();
+        for (const opt of options) {
+          const text = (await opt.innerText().catch(() => '')).trim();
+          const val = await opt.getAttribute('value');
+          const match = text.match(/([A-Z0-9_\-]+)\s*-\s*(\d+)\s*Seat/i);
+          const name = match ? match[1] : text;
+          const count = match ? parseInt(match[2], 10) : 0;
           coaches.push({
-            index: i,
-            name: rawName || `Coach ${i + 1}`,
-            btn: cBtn,
-            availableCount: freeSeats.length,
-            freeSeats
+            type: 'dropdown',
+            name,
+            val,
+            text,
+            availableCount: count
           });
         }
-
-        coaches.sort((a, b) => b.availableCount - a.availableCount);
-
-        console.log('\n📊 Coach Inventory Ranking (Maximum to Minimum Seats):');
-        coaches.forEach((c, idx) => {
-          console.log(`   ${idx + 1}. Coach "${c.name}": ${c.availableCount} available seat(s)`);
-        });
       } else {
-        const freeSeats = await page.$$eval(
-          'button.btn-seat.seat-available:not([disabled]):not(.seat-booked):not(.sleeper-gray)',
-          els => els.map(e => e.getAttribute('title') || e.innerText.trim()).filter(Boolean)
-        ).catch(() => []);
+        // Fall back to coach buttons if dropdown is not used
+        const coachButtons = page.locator('button.seat-floor-btn, .all-coach button, button.btn-coach, .coach-selection-btn, button[class*="coach"]');
+        let coachCount = 0;
+        try {
+          await coachButtons.first().waitFor({ state: 'visible', timeout: 6000 });
+          coachCount = await coachButtons.count();
+        } catch {}
 
-        coaches.push({
-          index: 0,
-          name: 'Main Coach',
-          btn: null,
-          availableCount: freeSeats.length,
-          freeSeats
-        });
+        if (coachCount > 0) {
+          console.log(`🔍 Scanning all ${coachCount} coach buttons to rank by available seat inventory...`);
+          for (let i = 0; i < coachCount; i++) {
+            const cBtn = coachButtons.nth(i);
+            const rawName = (await cBtn.innerText().catch(() => '')).trim();
+
+            await cBtn.click().catch(() => {});
+            await page.waitForTimeout(600);
+
+            if (await page.locator('.swal2-container').isVisible().catch(() => false)) {
+              await page.locator('button.swal2-confirm, button:has-text("OKAY"), button:has-text("OK")').first().click().catch(() => {});
+              await page.waitForTimeout(300);
+            }
+
+            const freeSeatsCount = await page.locator('button.btn-seat:not([disabled]):not(.seat-booked):not(.sleeper-gray):not(.seat-selected)').count().catch(() => 0);
+
+            coaches.push({
+              type: 'button',
+              index: i,
+              name: rawName || `Coach ${i + 1}`,
+              btn: cBtn,
+              availableCount: freeSeatsCount
+            });
+          }
+        } else {
+          const freeSeatsCount = await page.locator('button.btn-seat:not([disabled]):not(.seat-booked):not(.sleeper-gray):not(.seat-selected)').count().catch(() => 0);
+          coaches.push({
+            type: 'none',
+            index: 0,
+            name: 'Main Coach',
+            availableCount: freeSeatsCount
+          });
+        }
       }
+
+      // Rank by maximum available seats first!
+      coaches.sort((a, b) => b.availableCount - a.availableCount);
+
+      console.log('\n📊 Coach Inventory Ranking (Maximum to Minimum Seats):');
+      coaches.forEach((c, idx) => {
+        console.log(`   ${idx + 1}. Coach "${c.name}": ${c.availableCount} available seat(s)`);
+      });
 
       // 7. Select Seats: Max Available Coach First, Expanding from Middle to Up/Down
       for (const coach of coaches) {
@@ -491,9 +552,13 @@ async function performFreshLogin(page) {
 
         console.log(`\n🎯 Selecting from Coach "${coach.name}" (Available: ${coach.availableCount}, Needed: ${remainingNeeded})...`);
 
-        if (coach.btn) {
-          await coach.btn.click().catch(() => {});
-          await page.waitForTimeout(500);
+        if (coach.type === 'dropdown') {
+          await bogieSelect.selectOption(coach.val).catch(() => {});
+          await page.waitForTimeout(1500);
+        } else if (coach.type === 'button') {
+          const coachButtons = page.locator('button.seat-floor-btn, .all-coach button, button.btn-coach, .coach-selection-btn, button[class*="coach"]');
+          await coachButtons.nth(coach.index).click().catch(() => {});
+          await page.waitForTimeout(800);
         }
 
         if (await page.locator('.swal2-container').isVisible().catch(() => false)) {
@@ -501,62 +566,65 @@ async function performFreshLogin(page) {
           await page.waitForTimeout(300);
         }
 
-        const freshFreeSeats = await page.$$eval(
-          'button.btn-seat.seat-available:not([disabled]):not(.seat-booked):not(.sleeper-gray)',
-          els => els.map(e => e.getAttribute('title') || e.innerText.trim()).filter(Boolean)
-        ).catch(() => []);
+        const availableSeatsLocator = page.locator('button.btn-seat:not([disabled]):not(.seat-booked):not(.sleeper-gray)');
+        const total = await availableSeatsLocator.count();
 
-        if (freshFreeSeats.length === 0) {
+        if (total === 0) {
           console.log(`⚠️ No selectable seats in Coach "${coach.name}". Checking next coach...`);
           continue;
         }
 
-        const total = freshFreeSeats.length;
         const mid = Math.floor(total / 2);
-        const targetSeats = [];
+        const targetIndices = [];
         let offset = 0;
         const pickCount = Math.min(remainingNeeded, total);
 
-        while (targetSeats.length < pickCount) {
+        while (targetIndices.length < pickCount) {
           const idx1 = mid + offset;
-          if (idx1 < total && !targetSeats.includes(freshFreeSeats[idx1])) {
-            targetSeats.push(freshFreeSeats[idx1]);
+          if (idx1 < total && !targetIndices.includes(idx1)) {
+            targetIndices.push(idx1);
           }
-          if (targetSeats.length >= pickCount) break;
+          if (targetIndices.length >= pickCount) break;
 
           const idx2 = mid - offset - 1;
-          if (idx2 >= 0 && !targetSeats.includes(freshFreeSeats[idx2])) {
-            targetSeats.push(freshFreeSeats[idx2]);
+          if (idx2 >= 0 && !targetIndices.includes(idx2)) {
+            targetIndices.push(idx2);
           }
           offset++;
         }
 
-        console.log(`   👉 Targeted middle-outward seats in Coach "${coach.name}": [${targetSeats.join(', ')}]`);
+        console.log(`   👉 Targeted middle-outward seats in Coach "${coach.name}": indices [${targetIndices.map(i => i + 1).join(', ')}] of ${total}`);
 
-        for (const seatName of targetSeats) {
-          if (await page.locator('.swal2-container').isVisible().catch(() => false)) {
-            const swalMsg = await page.locator('.swal2-title').innerText().catch(() => '');
-            console.log(`   ⚠️ Portal Alert detected: "${swalMsg}". Dismissing...`);
-            await page.locator('button.swal2-confirm, button:has-text("OKAY"), button:has-text("OK")').first().click().catch(() => {});
-            await page.waitForTimeout(400);
-            break;
-          }
-
-          const seatBtn = page.locator(`button.btn-seat[title="${seatName}"], button.btn-seat:has-text("${seatName}")`).first();
-          if (await seatBtn.isVisible().catch(() => false)) {
-            console.log(`   👉 Clicking seat: ${seatName}`);
-            await seatBtn.click().catch(() => {});
-            await page.waitForTimeout(1000);
-
-            if (await page.locator('.swal2-container').isVisible().catch(() => false)) {
-              const swalMsg = await page.locator('.swal2-title').innerText().catch(() => '');
-              console.log(`   ⚠️ Portal Alert on seat click: "${swalMsg}"`);
+        for (const idx of targetIndices) {
+          const alertPopupBefore = page.locator('.swal2-popup:visible, .swal2-modal:visible');
+          if (await alertPopupBefore.isVisible().catch(() => false)) {
+            const swalMsg = (await page.locator('.swal2-title, .swal2-html-container').first().innerText().catch(() => '')).trim();
+            if (swalMsg) {
+              console.log(`   ⚠️ Portal Alert detected: "${swalMsg}". Dismissing...`);
               await page.locator('button.swal2-confirm, button:has-text("OKAY"), button:has-text("OK")').first().click().catch(() => {});
               await page.waitForTimeout(400);
               break;
-            } else {
-              remainingNeeded--;
             }
+          }
+
+          const seatBtn = availableSeatsLocator.nth(idx);
+          if (await seatBtn.isVisible().catch(() => false)) {
+            const seatTitle = (await seatBtn.getAttribute('title')) || (await seatBtn.innerText()).trim();
+            console.log(`   👉 Clicking middle seat: ${seatTitle || ('#' + (idx + 1))}`);
+            await seatBtn.click().catch(() => {});
+            await page.waitForTimeout(700);
+
+            const alertPopupAfter = page.locator('.swal2-popup:visible, .swal2-modal:visible');
+            if (await alertPopupAfter.isVisible().catch(() => false)) {
+              const swalMsg = (await page.locator('.swal2-title, .swal2-html-container').first().innerText().catch(() => '')).trim();
+              if (swalMsg) {
+                console.log(`   ⚠️ Portal Alert on seat click: "${swalMsg}"`);
+                await page.locator('button.swal2-confirm, button:has-text("OKAY"), button:has-text("OK")').first().click().catch(() => {});
+                await page.waitForTimeout(400);
+                break;
+              }
+            }
+            remainingNeeded--;
           }
         }
 
@@ -569,32 +637,55 @@ async function performFreshLogin(page) {
     }
 
     // 8. Verify total selected seats and Continue button safely
-    const finalSelected = await page.$$eval(
-      '.selected-seats-list .single-selected-seat-btn, button.btn-seat.seat-selected',
-      els => els.map(e => e.innerText.trim()).filter(Boolean)
+    await page.waitForTimeout(1000);
+    const rawSelected = await page.$$eval(
+      '.selected-seats-list .single-selected-seat-btn, button.btn-seat.seat-selected, .selected-seats-table-wrapper tr td:nth-child(2)',
+      els => els.map(e => e.innerText.trim() || e.getAttribute('title')).filter(Boolean)
     ).catch(() => []);
-    console.log(`\n🎉 Final Confirmed Selected Seats (${finalSelected.length}/4): [${finalSelected.join(', ')}]`);
+    const finalSelected = [...new Set(rawSelected)];
 
-    const continueBtn = page.locator('button.continue-btn').first();
-    if (await continueBtn.isVisible().catch(() => false)) {
-      console.log('✅ "CONTINUE PURCHASE" button is ACTIVE and ready to proceed.');
+    if (finalSelected.length === 0) {
+      console.log('\n⚠️ No seats could be locked in cart.');
+    } else {
+      console.log(`\n🎉 Final Confirmed Selected Seats (${finalSelected.length}/4): [${finalSelected.join(', ')}]`);
+
+      // Trigger completion celebration chime and desktop notification
+      triggerAlertNotification(
+        'Seats Locked in Cart!',
+        `Successfully selected [${finalSelected.join(', ')}]. Proceeding to payment...`
+      );
+
+      // Locate CONTINUE PURCHASE button and automatically proceed to payment
+      const continueBtn = page.locator('button.continue-btn, #confirmbooking button[type="submit"], button:has-text("CONTINUE PURCHASE")').first();
+      const isContinueVis = await continueBtn.isVisible().catch(() => false);
+      const isContinueEnabled = await continueBtn.isEnabled().catch(() => false);
+
+      if (isContinueVis && isContinueEnabled) {
+        console.log('✅ "CONTINUE PURCHASE" button is ACTIVE!');
+        console.log('💳 Automatically proceeding to Passenger Details & Payment page...');
+        await continueBtn.click();
+
+        // Wait for passenger details / payment page navigation
+        try {
+          await page.waitForURL(url => url.pathname.includes('passenger') || url.pathname.includes('purchase') || url.pathname.includes('payment'), { timeout: 15000 });
+          console.log(`🎉 Successfully advanced to Passenger Details & Payment page!`);
+          console.log(`🔗 Current URL: ${page.url()}`);
+        } catch {
+          await page.waitForTimeout(3000);
+          console.log(`🔗 Current URL after continue click: ${page.url()}`);
+        }
+      } else {
+        console.log(`⚠️ Continue button status: visible=${isContinueVis}, enabled=${isContinueEnabled}`);
+      }
+
+      console.log('\n🖥️ Seat selection and payment progression completed successfully!');
+      console.log('👉 You now have 15 MINUTES before the railway cart hold expires.');
     }
 
-    // Trigger completion celebration chime and desktop notification
-    triggerAlertNotification(
-      'Seats Locked in Cart!',
-      `Successfully selected [${finalSelected.join(', ')}]. You have 15 minutes to complete payment!`
-    );
-
-    console.log('\n🖥️ Seat selection completed! The browser will stay open indefinitely.');
-    console.log('👉 You now have 15 MINUTES before the railway cart hold expires. Proceed with passenger details and payment!');
-
-    // Keep browser open indefinitely until user closes it
-    await new Promise(resolve => {
-      page.on('close', resolve);
-      context.on('close', resolve);
-    });
-    console.log('ℹ️ Browser window was closed manually by user. Exiting cleanly.');
+    // Auto-close cleanly per user request (no freezing)
+    console.log('⏳ Finishing run and closing browser automatically in 6 seconds...');
+    await page.waitForTimeout(6000);
+    console.log('✨ Closing browser and exiting cleanly.');
   } catch (err) {
     if (err.message && (err.message.includes('Target page, context or browser has been closed') || err.message.includes('browser has been closed'))) {
       console.log('ℹ️ Browser window was closed manually by user. Exiting cleanly.');

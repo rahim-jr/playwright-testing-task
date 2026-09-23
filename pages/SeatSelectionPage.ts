@@ -10,6 +10,7 @@ export class SeatSelectionPage extends BasePage {
   readonly tripCards: Locator;
   readonly seatLayoutContainer: Locator;
   readonly coachButtons: Locator;
+  readonly coachSelect: Locator;
   readonly seatButtons: Locator;
   readonly selectedSeatsList: Locator;
   readonly totalFareAmount: Locator;
@@ -17,9 +18,10 @@ export class SeatSelectionPage extends BasePage {
 
   constructor(page: Page) {
     super(page);
-    this.tripCards = page.locator('.single-trip-wrapper');
-    this.seatLayoutContainer = page.locator('.seat-layout-container');
+    this.tripCards = page.locator('.single-trip-wrapper, .trip-single-widget');
+    this.seatLayoutContainer = page.locator('.seat-layout-container, .view_seat_bg, .bogie-selection');
     this.coachButtons = page.locator('button.seat-floor-btn, .all-coach button, button.btn-coach, .coach-selection-btn, button[class*="coach"]');
+    this.coachSelect = page.locator('#select-bogie, select.selectpicker, .bogie-selection select');
     this.seatButtons = page.locator('button.btn-seat');
     this.selectedSeatsList = page.locator('.selected-seats-list .single-selected-seat-btn, .scs-item.seats-selected');
     this.totalFareAmount = page.locator('.total-amount, .fare-amount');
@@ -87,6 +89,17 @@ export class SeatSelectionPage extends BasePage {
    * Get list of available coaches in the coach selection bar
    */
   async getAvailableCoaches(): Promise<string[]> {
+    if (await this.coachSelect.first().isVisible({ timeout: 4000 }).catch(() => false)) {
+      const options = await this.coachSelect.locator('option').all();
+      const coaches: string[] = [];
+      for (const opt of options) {
+        const text = (await opt.innerText()).trim();
+        const match = text.match(/([A-Z0-9_\-]+)\s*-\s*(\d+)\s*Seat/i);
+        coaches.push(match ? match[1] : text);
+      }
+      return coaches;
+    }
+
     await this.coachButtons.first().waitFor({ state: 'visible', timeout: 8000 });
     const count = await this.coachButtons.count();
     const coaches: string[] = [];
@@ -101,6 +114,27 @@ export class SeatSelectionPage extends BasePage {
    * Select a specific coach by name (e.g. "KHA", "GA", "GHA") or the first available
    */
   async selectCoach(coachName?: string): Promise<void> {
+    if (await this.coachSelect.first().isVisible({ timeout: 4000 }).catch(() => false)) {
+      if (coachName) {
+        const options = await this.coachSelect.locator('option').all();
+        for (const opt of options) {
+          const text = await opt.innerText();
+          const val = await opt.getAttribute('value');
+          if (new RegExp(coachName, 'i').test(text) && val !== null) {
+            await this.coachSelect.selectOption(val);
+            await this.page.waitForTimeout(600);
+            return;
+          }
+        }
+      }
+      const firstVal = await this.coachSelect.locator('option').first().getAttribute('value');
+      if (firstVal !== null) {
+        await this.coachSelect.selectOption(firstVal);
+      }
+      await this.page.waitForTimeout(600);
+      return;
+    }
+
     if (coachName) {
       const target = this.coachButtons.filter({ hasText: new RegExp(`^${coachName}$`, 'i') });
       await target.first().click();
@@ -155,6 +189,20 @@ export class SeatSelectionPage extends BasePage {
    * Scan coaches and return them ranked by available seat count (Max to Min)
    */
   async getCoachesWithAvailability(): Promise<Array<{ name: string; availableCount: number; index: number }>> {
+    if (await this.coachSelect.first().isVisible({ timeout: 4000 }).catch(() => false)) {
+      const options = await this.coachSelect.locator('option').all();
+      const result: Array<{ name: string; availableCount: number; index: number }> = [];
+      for (let i = 0; i < options.length; i++) {
+        const text = (await options[i].innerText()).trim();
+        const match = text.match(/([A-Z0-9_\-]+)\s*-\s*(\d+)\s*Seat/i);
+        const name = match ? match[1] : text;
+        const count = match ? parseInt(match[2], 10) : 0;
+        result.push({ name, availableCount: count, index: i });
+      }
+      result.sort((a, b) => b.availableCount - a.availableCount);
+      return result;
+    }
+
     const count = await this.coachButtons.count();
     const result: Array<{ name: string; availableCount: number; index: number }> = [];
 
