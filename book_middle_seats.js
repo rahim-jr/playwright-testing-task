@@ -112,8 +112,34 @@ async function performFreshLogin(page) {
   await page.waitForTimeout(1500);
 }
 
+/**
+ * Keeps the script running until the browser window / tab is manually closed by the user
+ */
+function waitForBrowserClosed(context, page) {
+  if (!page || page.isClosed()) return Promise.resolve();
+  return new Promise(resolve => {
+    const checkRemaining = () => {
+      const openPages = context ? context.pages().filter(p => !p.isClosed()) : [];
+      if (openPages.length === 0) resolve();
+    };
+
+    if (context) {
+      context.once('close', resolve);
+      context.on('page', newPage => {
+        newPage.once('close', checkRemaining);
+      });
+      for (const p of context.pages()) {
+        p.once('close', checkRemaining);
+      }
+    }
+
+    page.once('close', checkRemaining);
+  });
+}
+
 (async () => {
   let context;
+  let page;
   try {
     const shouldClear = process.argv.includes('--clear') || process.env.CLEAR_PREVIOUS === 'true';
     const singleCheckOnly = process.argv.includes('--once');
@@ -129,7 +155,13 @@ async function performFreshLogin(page) {
       args: ['--no-sandbox', '--disable-blink-features=AutomationControlled']
     });
 
-    const page = context.pages()[0] || await context.newPage();
+    process.once('SIGINT', async () => {
+      console.log('\nℹ️ Received interrupt signal (Ctrl+C). Closing browser and exiting...');
+      if (context) await context.close().catch(() => {});
+      process.exit(0);
+    });
+
+    page = context.pages()[0] || await context.newPage();
 
     page.on('close', () => {
       console.log('ℹ️ Browser tab was closed.');
@@ -682,15 +714,21 @@ async function performFreshLogin(page) {
       console.log('👉 You now have 15 MINUTES before the railway cart hold expires.');
     }
 
-    // Auto-close cleanly per user request (no freezing)
-    console.log('⏳ Finishing run and closing browser automatically in 6 seconds...');
-    await page.waitForTimeout(6000);
-    console.log('✨ Closing browser and exiting cleanly.');
+    // Keep browser open until manually closed by user
+    console.log('\n🌐 Run complete! Browser is left open for your manual testing, verification, and payment.');
+    console.log('ℹ️ Close the browser window manually when you are done to exit.');
+    await waitForBrowserClosed(context, page);
+    console.log('✨ Browser closed manually. Exiting cleanly.');
   } catch (err) {
     if (err.message && (err.message.includes('Target page, context or browser has been closed') || err.message.includes('browser has been closed'))) {
       console.log('ℹ️ Browser window was closed manually by user. Exiting cleanly.');
     } else {
       console.error('An error occurred during execution:', err.message);
+      if (page && !page.isClosed()) {
+        console.log('\n🌐 Browser will remain open for your manual inspection.');
+        console.log('ℹ️ Close the browser window manually when you are done to exit.');
+        await waitForBrowserClosed(context, page);
+      }
     }
   } finally {
     if (context) {
