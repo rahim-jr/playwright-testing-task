@@ -220,29 +220,40 @@ export class SeatSelectionPage extends BasePage {
     const total = rawCoaches.length;
     if (total <= 1) return rawCoaches;
 
-    const maxSeats = Math.max(...rawCoaches.map(c => c.availableCount), 1);
+    const midIndex = Math.max(0.5, (total - 1) / 2);
 
     return rawCoaches.map((c) => {
-      if (c.availableCount === 0) return { ...c, score: -1000 };
-
-      const canFulfill = c.availableCount >= remainingNeeded ? 600 : (c.availableCount * 40);
-      const midIndex = Math.max(0.5, (total - 1) / 2);
       const distFromCenter = Math.abs(c.index - midIndex);
-      const proximity = 1 - (distFromCenter / Math.max(midIndex, 1));
-      const centerBonus = proximity * 120;
-      const volumeBonus = Math.min(60, c.availableCount);
-
       const upperName = c.name.toUpperCase();
-      let generatorPenalty = 0;
-      if (upperName.includes('PWR') || upperName.includes('GEN') || upperName.includes('SLR') || upperName.includes('PC')) {
-        generatorPenalty = -400;
-      } else if (maxSeats >= 20 && c.availableCount < (maxSeats * 0.25)) {
-        generatorPenalty = -150;
+      const isKnownGenerator = upperName.includes('PWR') ||
+        upperName.includes('GEN') ||
+        upperName.includes('SLR') ||
+        upperName.includes('PC');
+
+      return {
+        ...c,
+        isKnownGenerator,
+        distFromCenter,
+      };
+    }).sort((a, b) => {
+      const aCount = a.availableCount || 0;
+      const bCount = b.availableCount || 0;
+
+      if (aCount === 0 && bCount === 0) return 0;
+      if (aCount === 0) return 1;
+      if (bCount === 0) return -1;
+
+      if (!a.isKnownGenerator && b.isKnownGenerator && aCount > 0) return -1;
+      if (a.isKnownGenerator && !b.isKnownGenerator && bCount > 0) return 1;
+
+      // 1. PRIMARY CRITERION: Maximum available seats first!
+      if (bCount !== aCount) {
+        return bCount - aCount;
       }
 
-      const score = canFulfill + centerBonus + volumeBonus + generatorPenalty;
-      return { ...c, score };
-    }).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+      // 2. TIE-BREAKER: If exact same seat count, prefer coach closer to center
+      return a.distFromCenter - b.distFromCenter;
+    });
   }
 
   /**
@@ -469,11 +480,11 @@ export class SeatSelectionPage extends BasePage {
       await this.selectCoach(coach.name);
 
       // Dynamic Generator Car / Low-Capacity Detection:
-      // If this coach has abnormally low total capacity (< 48 seats) and other full coaches are available,
-      // prefer the full-size coach for a quieter, smoother ride.
+      // If this coach has abnormally low total capacity (< 48 seats) and other coaches have available seats,
+      // skip this generator coach and move to the next coach with maximum seats.
       const totalPhysicalSeats = await this.page.locator('button.btn-seat').count().catch(() => 0);
-      const otherFullCoaches = coachRanking.filter(o => o.name !== coach.name && o.availableCount >= remainingNeeded);
-      if (totalPhysicalSeats > 0 && totalPhysicalSeats < 48 && otherFullCoaches.length > 0) {
+      const otherCoachesWithSeats = coachRanking.filter(o => o.name !== coach.name && (o.availableCount || 0) > 0);
+      if (totalPhysicalSeats > 0 && totalPhysicalSeats < 48 && otherCoachesWithSeats.length > 0) {
         continue;
       }
 

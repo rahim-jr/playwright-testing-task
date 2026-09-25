@@ -307,49 +307,55 @@ async function getOptimalSeatsInCurrentCoach(page, neededCount) {
 
 /**
  * SmartCoachRanker (SCR) Algorithm:
- * Intelligently scores and ranks coaches based on:
- * 1. Full Fulfillment (600 pts if available >= needed): Keep whole party in one coach.
- * 2. Train Center Proximity (up to 120 pts): Middle coaches (N/2) offer smoothest ride.
- * 3. Volume bonus (up to 60 pts): Higher inventory gives higher odds of contiguous middle quads.
- * 4. Power Car / Low Seat Anomaly Penalty: Detects PWR/GEN/SLR or abnormally small capacity relative to standard coaches.
+ * Strictly ranks coaches by MAXIMUM AVAILABLE SEATS first.
+ * - Highest available seat count is prioritized (Max to Min).
+ * - Known generator coaches (PWR, GEN, SLR, PC) are deprioritized if other coaches have seats.
+ * - Tie-breaker: If two coaches have the exact same seat count, prefers the coach closer to train center.
  */
 function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
   const total = coaches.length;
   if (total <= 1) return coaches;
 
-  const maxSeats = Math.max(...coaches.map(c => c.availableCount || 0), 1);
+  const midIndex = Math.max(0.5, (total - 1) / 2);
 
   return [...coaches].map((c, i) => {
     const count = c.availableCount || 0;
-    if (count === 0) return { ...c, score: -1000 };
-
-    // 1. Fulfillment priority: can this coach fit all needed seats?
-    const canFulfill = count >= remainingNeeded ? 600 : (count * 40);
-
-    // 2. Train position: middle coaches (N/2) offer smoothest ride
-    const midIndex = Math.max(0.5, (total - 1) / 2);
     const coachIndex = (typeof c.index === 'number') ? c.index : i;
     const distFromCenter = Math.abs(coachIndex - midIndex);
-    const proximity = 1 - (distFromCenter / Math.max(midIndex, 1));
-    const centerBonus = proximity * 120;
 
-    // 3. Volume bonus: having more seats gives higher probability of adjacent 4-seat clusters
-    const volumeBonus = Math.min(60, count);
-
-    // 4. Generator / Power car anomaly detection:
-    // If name contains PWR, GEN, SLR, or if its count is noticeably smaller relative to other coaches
     const upperName = (c.name || '').toUpperCase();
-    let generatorPenalty = 0;
-    if (upperName.includes('PWR') || upperName.includes('GEN') || upperName.includes('SLR') || upperName.includes('PC')) {
-      generatorPenalty = -400;
-    } else if (maxSeats >= 20 && count < (maxSeats * 0.25)) {
-      // Abnormally low capacity relative to other coaches
-      generatorPenalty = -150;
+    const isKnownGenerator = upperName.includes('PWR') ||
+      upperName.includes('GEN') ||
+      upperName.includes('SLR') ||
+      upperName.includes('PC');
+
+    return {
+      ...c,
+      index: coachIndex,
+      isKnownGenerator,
+      distFromCenter,
+    };
+  }).sort((a, b) => {
+    const aCount = a.availableCount || 0;
+    const bCount = b.availableCount || 0;
+
+    // Both have 0 seats -> keep at end
+    if (aCount === 0 && bCount === 0) return 0;
+    if (aCount === 0) return 1;
+    if (bCount === 0) return -1;
+
+    // If one is a known generator coach and the other is standard, prefer standard if it has seats
+    if (!a.isKnownGenerator && b.isKnownGenerator && aCount > 0) return -1;
+    if (a.isKnownGenerator && !b.isKnownGenerator && bCount > 0) return 1;
+
+    // 1. PRIMARY CRITERION: Maximum available seats first!
+    if (bCount !== aCount) {
+      return bCount - aCount;
     }
 
-    const score = canFulfill + centerBonus + volumeBonus + generatorPenalty;
-    return { ...c, index: coachIndex, score };
-  }).sort((a, b) => b.score - a.score);
+    // 2. TIE-BREAKER: If exact same seat count, prefer coach closer to center
+    return a.distFromCenter - b.distFromCenter;
+  });
 }
 
 (async () => {
@@ -786,9 +792,10 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
       // Rank intelligently using SmartCoachRanker (SCR)
       coaches = rankCoachesIntelligently(coaches, remainingNeeded);
 
-      console.log('\n📊 Intelligent Coach Ranking (SCR - Quality & Comfort Weighted):');
+      console.log('\n📊 Coach Inventory Ranking (Maximum Available Seats First):');
       coaches.forEach((c, idx) => {
-        console.log(`   ${idx + 1}. Coach "${c.name}": ${c.availableCount} seat(s) available (Rank Score: ${c.score ? c.score.toFixed(0) : 'N/A'})`);
+        const genLabel = c.isKnownGenerator ? ' [Generator / Power Car]' : '';
+        console.log(`   ${idx + 1}. Coach "${c.name}": ${c.availableCount} available seat(s)${genLabel}`);
       });
 
       // 7. Select Seats: Max Available Coach First, using SmartContigCenter (SCC) Algorithm
@@ -817,13 +824,19 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
 
         // Dynamic Generator Car / Low-Capacity Coach Detection:
         // Standard coaches on Bangladesh Railway have 70-105 seats. Generator cars have ~28-45 seats.
-        // If this coach has abnormally low capacity (< 48 seats) and other full coaches are available, prefer full coaches!
+        // If this coach has abnormally low capacity (< 48 seats) and other coaches have available seats, skip the generator coach!
         const totalCoachSeats = await page.locator('button.btn-seat').count().catch(() => 0);
-        const otherFullCoaches = coaches.filter(other => other.name !== coach.name && other.availableCount >= remainingNeeded);
+        const otherCoachesWithSeats = coaches.filter(other =>
+          other.name !== coach.name &&
+          (other.availableCount || 0) > 0 &&
+          !other.wasSkippedAsGenerator
+        );
 
-        if (totalCoachSeats > 0 && totalCoachSeats < 48 && otherFullCoaches.length > 0) {
-          console.log(`ℹ️ Coach "${coach.name}" has only ${totalCoachSeats} total physical seats (Generator / Power Car compartment detected).`);
-          console.log(`⏩ Preferring full-size passenger coach "${otherFullCoaches[0].name}" for a quieter, smoother ride...`);
+        if (totalCoachSeats > 0 && totalCoachSeats < 48 && otherCoachesWithSeats.length > 0) {
+          coach.wasSkippedAsGenerator = true;
+          const nextTarget = otherCoachesWithSeats[0];
+          console.log(`ℹ️ Coach "${coach.name}" has only ${totalCoachSeats} total physical seats (Generator Car detected with lower seat count).`);
+          console.log(`⏩ Skipping generator coach "${coach.name}" and selecting next coach with maximum seats: "${nextTarget.name}" (${nextTarget.availableCount} available seats)...`);
           continue;
         }
 
