@@ -309,10 +309,9 @@ async function getOptimalSeatsInCurrentCoach(page, neededCount) {
  * SmartCoachRanker (SCR) Algorithm:
  * Intelligently scores and ranks coaches based on:
  * 1. Full Fulfillment (600 pts if available >= needed): Keep whole party in one coach.
- * 2. Train Center Proximity (up to 120 pts): Middle coaches (N/2) offer smoothest ride & furthest from engine/brake.
- * 3. Engine-side penalty (-70 pts for index 0, -25 pts for index 1).
- * 4. Volume bonus (up to 60 pts): Higher inventory gives higher odds of contiguous middle quads.
- * 5. Power Car / Low Seat Anomaly Penalty: Detects PWR/GEN/SLR or abnormally small capacity relative to standard coaches.
+ * 2. Train Center Proximity (up to 120 pts): Middle coaches (N/2) offer smoothest ride.
+ * 3. Volume bonus (up to 60 pts): Higher inventory gives higher odds of contiguous middle quads.
+ * 4. Power Car / Low Seat Anomaly Penalty: Detects PWR/GEN/SLR or abnormally small capacity relative to standard coaches.
  */
 function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
   const total = coaches.length;
@@ -327,20 +326,17 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
     // 1. Fulfillment priority: can this coach fit all needed seats?
     const canFulfill = count >= remainingNeeded ? 600 : (count * 40);
 
-    // 2. Train position: middle coaches (N/2) offer smoothest ride & furthest from engine
+    // 2. Train position: middle coaches (N/2) offer smoothest ride
     const midIndex = Math.max(0.5, (total - 1) / 2);
     const coachIndex = (typeof c.index === 'number') ? c.index : i;
     const distFromCenter = Math.abs(coachIndex - midIndex);
     const proximity = 1 - (distFromCenter / Math.max(midIndex, 1));
     const centerBonus = proximity * 120;
 
-    // 3. Engine-side penalty (index 0 is front coach closest to locomotive)
-    const enginePenalty = (coachIndex === 0) ? -70 : (coachIndex === 1 ? -25 : 0);
-
-    // 4. Volume bonus: having more seats gives higher probability of adjacent 4-seat clusters
+    // 3. Volume bonus: having more seats gives higher probability of adjacent 4-seat clusters
     const volumeBonus = Math.min(60, count);
 
-    // 5. Generator / Power car anomaly detection:
+    // 4. Generator / Power car anomaly detection:
     // If name contains PWR, GEN, SLR, or if its count is noticeably smaller relative to other coaches
     const upperName = (c.name || '').toUpperCase();
     let generatorPenalty = 0;
@@ -351,7 +347,7 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
       generatorPenalty = -150;
     }
 
-    const score = canFulfill + centerBonus + enginePenalty + volumeBonus + generatorPenalty;
+    const score = canFulfill + centerBonus + volumeBonus + generatorPenalty;
     return { ...c, index: coachIndex, score };
   }).sort((a, b) => b.score - a.score);
 }
@@ -790,10 +786,9 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
       // Rank intelligently using SmartCoachRanker (SCR)
       coaches = rankCoachesIntelligently(coaches, remainingNeeded);
 
-      console.log('\n📊 Intelligent Coach Ranking (SCR - Quality, Position & Comfort Weighted):');
+      console.log('\n📊 Intelligent Coach Ranking (SCR - Quality & Comfort Weighted):');
       coaches.forEach((c, idx) => {
-        const tag = (c.index === 0) ? ' [Front / Engine Side]' : '';
-        console.log(`   ${idx + 1}. Coach "${c.name}": ${c.availableCount} seat(s) available (Rank Score: ${c.score ? c.score.toFixed(0) : 'N/A'})${tag}`);
+        console.log(`   ${idx + 1}. Coach "${c.name}": ${c.availableCount} seat(s) available (Rank Score: ${c.score ? c.score.toFixed(0) : 'N/A'})`);
       });
 
       // 7. Select Seats: Max Available Coach First, using SmartContigCenter (SCC) Algorithm

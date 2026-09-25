@@ -230,7 +230,6 @@ export class SeatSelectionPage extends BasePage {
       const distFromCenter = Math.abs(c.index - midIndex);
       const proximity = 1 - (distFromCenter / Math.max(midIndex, 1));
       const centerBonus = proximity * 120;
-      const enginePenalty = (c.index === 0) ? -70 : (c.index === 1 ? -25 : 0);
       const volumeBonus = Math.min(60, c.availableCount);
 
       const upperName = c.name.toUpperCase();
@@ -241,7 +240,7 @@ export class SeatSelectionPage extends BasePage {
         generatorPenalty = -150;
       }
 
-      const score = canFulfill + centerBonus + enginePenalty + volumeBonus + generatorPenalty;
+      const score = canFulfill + centerBonus + volumeBonus + generatorPenalty;
       return { ...c, score };
     }).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
   }
