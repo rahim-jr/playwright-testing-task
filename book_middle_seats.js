@@ -683,17 +683,19 @@ function waitForBrowserClosed(context, page) {
 
       // Trigger completion celebration chime and desktop notification
       triggerAlertNotification(
-        'Seats Locked in Cart!',
-        `Successfully selected [${finalSelected.join(', ')}]. Proceeding to payment...`
+        'Seats Selected in Cart!',
+        `Successfully selected [${finalSelected.join(', ')}].`
       );
 
-      // Locate CONTINUE PURCHASE button and automatically proceed to payment
+      // Locate CONTINUE PURCHASE button and verify status (auto-click commented out for now)
       const continueBtn = page.locator('button.continue-btn, #confirmbooking button[type="submit"], button:has-text("CONTINUE PURCHASE")').first();
       const isContinueVis = await continueBtn.isVisible().catch(() => false);
       const isContinueEnabled = await continueBtn.isEnabled().catch(() => false);
 
       if (isContinueVis && isContinueEnabled) {
         console.log('✅ "CONTINUE PURCHASE" button is ACTIVE!');
+        console.log('ℹ️ Automated click on "CONTINUE PURCHASE" is commented out for now. You can click it manually in the browser when ready.');
+        /*
         console.log('💳 Automatically proceeding to Passenger Details & Payment page...');
         await continueBtn.click();
 
@@ -706,12 +708,12 @@ function waitForBrowserClosed(context, page) {
           await page.waitForTimeout(3000);
           console.log(`🔗 Current URL after continue click: ${page.url()}`);
         }
+        */
       } else {
         console.log(`⚠️ Continue button status: visible=${isContinueVis}, enabled=${isContinueEnabled}`);
       }
 
-      console.log('\n🖥️ Seat selection and payment progression completed successfully!');
-      console.log('👉 You now have 15 MINUTES before the railway cart hold expires.');
+      console.log('\n🖥️ Seat selection completed successfully!');
     }
 
     // Keep browser open until manually closed by user
