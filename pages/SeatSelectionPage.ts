@@ -186,40 +186,64 @@ export class SeatSelectionPage extends BasePage {
   }
 
   /**
-   * Scan coaches and return them ranked by available seat count (Max to Min)
+   * SmartCoachRanker (SCR):
+   * Scan coaches and return them ranked intelligently based on fulfillment capability,
+   * train center position (comfort & smoothness), engine-side avoidance, and volume depth.
    */
-  async getCoachesWithAvailability(): Promise<Array<{ name: string; availableCount: number; index: number }>> {
+  async getCoachesWithAvailability(remainingNeeded: number = 4): Promise<Array<{ name: string; availableCount: number; index: number; score?: number }>> {
+    const rawCoaches: Array<{ name: string; availableCount: number; index: number }> = [];
+
     if (await this.coachSelect.first().isVisible({ timeout: 4000 }).catch(() => false)) {
       const options = await this.coachSelect.locator('option').all();
-      const result: Array<{ name: string; availableCount: number; index: number }> = [];
       for (let i = 0; i < options.length; i++) {
         const text = (await options[i].innerText()).trim();
         const match = text.match(/([A-Z0-9_\-]+)\s*-\s*(\d+)\s*Seat/i);
         const name = match ? match[1] : text;
         const count = match ? parseInt(match[2], 10) : 0;
-        result.push({ name, availableCount: count, index: i });
+        rawCoaches.push({ name, availableCount: count, index: i });
       }
-      result.sort((a, b) => b.availableCount - a.availableCount);
-      return result;
+    } else {
+      const count = await this.coachButtons.count();
+      for (let i = 0; i < count; i++) {
+        const cBtn = this.coachButtons.nth(i);
+        const name = (await cBtn.innerText().catch(() => '')).trim() || `Coach ${i + 1}`;
+        await cBtn.click().catch(() => {});
+        await this.page.waitForTimeout(400);
+
+        const availableSeats = this.page.locator('button.btn-seat:not([disabled]):not(.seat-booked):not(.sleeper-gray)');
+        const seatCount = await availableSeats.count();
+
+        rawCoaches.push({ name, availableCount: seatCount, index: i });
+      }
     }
 
-    const count = await this.coachButtons.count();
-    const result: Array<{ name: string; availableCount: number; index: number }> = [];
+    const total = rawCoaches.length;
+    if (total <= 1) return rawCoaches;
 
-    for (let i = 0; i < count; i++) {
-      const cBtn = this.coachButtons.nth(i);
-      const name = (await cBtn.innerText().catch(() => '')).trim() || `Coach ${i + 1}`;
-      await cBtn.click().catch(() => {});
-      await this.page.waitForTimeout(400);
+    const maxSeats = Math.max(...rawCoaches.map(c => c.availableCount), 1);
 
-      const availableSeats = this.page.locator('button.btn-seat:not([disabled]):not(.seat-booked):not(.sleeper-gray)');
-      const seatCount = await availableSeats.count();
+    return rawCoaches.map((c) => {
+      if (c.availableCount === 0) return { ...c, score: -1000 };
 
-      result.push({ name, availableCount: seatCount, index: i });
-    }
+      const canFulfill = c.availableCount >= remainingNeeded ? 600 : (c.availableCount * 40);
+      const midIndex = Math.max(0.5, (total - 1) / 2);
+      const distFromCenter = Math.abs(c.index - midIndex);
+      const proximity = 1 - (distFromCenter / Math.max(midIndex, 1));
+      const centerBonus = proximity * 120;
+      const enginePenalty = (c.index === 0) ? -70 : (c.index === 1 ? -25 : 0);
+      const volumeBonus = Math.min(60, c.availableCount);
 
-    result.sort((a, b) => b.availableCount - a.availableCount);
-    return result;
+      const upperName = c.name.toUpperCase();
+      let generatorPenalty = 0;
+      if (upperName.includes('PWR') || upperName.includes('GEN') || upperName.includes('SLR') || upperName.includes('PC')) {
+        generatorPenalty = -400;
+      } else if (maxSeats >= 20 && c.availableCount < (maxSeats * 0.25)) {
+        generatorPenalty = -150;
+      }
+
+      const score = canFulfill + centerBonus + enginePenalty + volumeBonus + generatorPenalty;
+      return { ...c, score };
+    }).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
   }
 
   /**
@@ -431,7 +455,7 @@ export class SeatSelectionPage extends BasePage {
    * to other coaches in the same session if needed.
    */
   async selectSeatsAcrossBestCoaches(targetCount: number = 4): Promise<string[]> {
-    const coachRanking = await this.getCoachesWithAvailability();
+    const coachRanking = await this.getCoachesWithAvailability(targetCount);
     const allSelected: string[] = [];
     let remainingNeeded = targetCount;
 
@@ -444,6 +468,16 @@ export class SeatSelectionPage extends BasePage {
       if (coach.availableCount === 0) continue;
 
       await this.selectCoach(coach.name);
+
+      // Dynamic Generator Car / Low-Capacity Detection:
+      // If this coach has abnormally low total capacity (< 48 seats) and other full coaches are available,
+      // prefer the full-size coach for a quieter, smoother ride.
+      const totalPhysicalSeats = await this.page.locator('button.btn-seat').count().catch(() => 0);
+      const otherFullCoaches = coachRanking.filter(o => o.name !== coach.name && o.availableCount >= remainingNeeded);
+      if (totalPhysicalSeats > 0 && totalPhysicalSeats < 48 && otherFullCoaches.length > 0) {
+        continue;
+      }
+
       const picked = await this.selectMiddleSeats(remainingNeeded);
       allSelected.push(...picked);
       remainingNeeded -= picked.length;
