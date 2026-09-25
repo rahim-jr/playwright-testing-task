@@ -137,6 +137,174 @@ function waitForBrowserClosed(context, page) {
   });
 }
 
+/**
+ * SmartContigCenter (SCC) Algorithm:
+ * Evaluates the live seat layout DOM in browser memory and selects optimal
+ * contiguous, cluster-aware, and center-weighted seats for the coach.
+ */
+async function getOptimalSeatsInCurrentCoach(page, neededCount) {
+  return await page.evaluate((k) => {
+    const allSeatElements = Array.from(document.querySelectorAll('button.btn-seat'));
+    if (!allSeatElements.length) return [];
+
+    const parsed = allSeatElements.map((el, idx) => {
+      const title = (el.getAttribute('title') || el.innerText || '').trim();
+      const matches = title.match(/\d+/g);
+      const seatNumber = matches ? parseInt(matches[matches.length - 1], 10) : (idx + 1);
+
+      const isBooked = el.disabled ||
+        el.classList.contains('seat-booked') ||
+        el.classList.contains('sleeper-gray') ||
+        el.classList.contains('disabled');
+      const isSelected = el.classList.contains('seat-selected') || el.classList.contains('selected');
+      const isAvailable = !isBooked && !isSelected;
+
+      return {
+        domIndex: idx,
+        title: title || String(seatNumber),
+        seatNumber,
+        isAvailable,
+        isSelected
+      };
+    });
+
+    const seatNumbers = parsed.map(s => s.seatNumber);
+    const minNum = Math.min(...seatNumbers);
+    const maxNum = Math.max(...seatNumbers);
+    const trueCenter = (minNum === maxNum) ? (parsed.length / 2) : ((minNum + maxNum) / 2);
+
+    const available = parsed
+      .filter(s => s.isAvailable)
+      .map(s => ({
+        ...s,
+        centerDist: Math.abs(s.seatNumber - trueCenter)
+      }));
+
+    if (available.length === 0) return [];
+    if (available.length <= k) {
+      return available.sort((a, b) => a.centerDist - b.centerDist);
+    }
+
+    // Sort available by seatNumber
+    available.sort((a, b) => a.seatNumber - b.seatNumber);
+
+    // Group into contiguous blocks where seat numbers are consecutive
+    const blocks = [];
+    let currentBlock = [available[0]];
+
+    for (let i = 1; i < available.length; i++) {
+      const prev = available[i - 1];
+      const curr = available[i];
+      if (curr.seatNumber === prev.seatNumber + 1) {
+        currentBlock.push(curr);
+      } else {
+        blocks.push(currentBlock);
+        currentBlock = [curr];
+      }
+    }
+    if (currentBlock.length > 0) {
+      blocks.push(currentBlock);
+    }
+
+    // Tier 1: Single contiguous block of k seats closest to true physical center
+    const kBlocks = [];
+    for (const block of blocks) {
+      if (block.length >= k) {
+        for (let w = 0; w <= block.length - k; w++) {
+          const window = block.slice(w, w + k);
+          const avgDist = window.reduce((sum, s) => sum + s.centerDist, 0) / k;
+          kBlocks.push({ seats: window, avgDist });
+        }
+      }
+    }
+
+    if (kBlocks.length > 0) {
+      kBlocks.sort((a, b) => a.avgDist - b.avgDist);
+      return kBlocks[0].seats;
+    }
+
+    // Tier 2: If k === 4, try two pairs (2 + 2) or triplet + 1 (3 + 1)
+    if (k === 4) {
+      const pairs = [];
+      for (const block of blocks) {
+        for (let w = 0; w <= block.length - 2; w++) {
+          const pair = block.slice(w, w + 2);
+          const avgDist = (pair[0].centerDist + pair[1].centerDist) / 2;
+          pairs.push({ pair, avgDist, startNum: pair[0].seatNumber, endNum: pair[1].seatNumber });
+        }
+      }
+
+      const candidateCombos = [];
+      for (let p1 = 0; p1 < pairs.length; p1++) {
+        for (let p2 = p1 + 1; p2 < pairs.length; p2++) {
+          const pair1 = pairs[p1];
+          const pair2 = pairs[p2];
+          if (pair1.endNum < pair2.startNum || pair2.endNum < pair1.startNum) {
+            const combined = [...pair1.pair, ...pair2.pair];
+            const avgDist = combined.reduce((sum, s) => sum + s.centerDist, 0) / 4;
+            const gap = Math.abs(pair1.startNum - pair2.startNum);
+            candidateCombos.push({ seats: combined, score: avgDist + (gap * 0.05) });
+          }
+        }
+      }
+
+      const triplets = [];
+      for (const block of blocks) {
+        for (let w = 0; w <= block.length - 3; w++) {
+          const triplet = block.slice(w, w + 3);
+          const avgDist = triplet.reduce((sum, s) => sum + s.centerDist, 0) / 3;
+          triplets.push({ triplet, avgDist, startNum: triplet[0].seatNumber, endNum: triplet[2].seatNumber });
+        }
+      }
+
+      for (const trip of triplets) {
+        for (const single of available) {
+          if (single.seatNumber < trip.startNum || single.seatNumber > trip.endNum) {
+            const combined = [...trip.triplet, single];
+            const avgDist = combined.reduce((sum, s) => sum + s.centerDist, 0) / 4;
+            const gap = Math.min(Math.abs(single.seatNumber - trip.startNum), Math.abs(single.seatNumber - trip.endNum));
+            candidateCombos.push({ seats: combined, score: avgDist + (gap * 0.05) });
+          }
+        }
+      }
+
+      if (candidateCombos.length > 0) {
+        candidateCombos.sort((a, b) => a.score - b.score);
+        return candidateCombos[0].seats;
+      }
+    }
+
+    // Tier 3: If k === 3, try (2 + 1)
+    if (k === 3) {
+      const pairs = [];
+      for (const block of blocks) {
+        for (let w = 0; w <= block.length - 2; w++) {
+          const pair = block.slice(w, w + 2);
+          pairs.push({ pair, startNum: pair[0].seatNumber, endNum: pair[1].seatNumber });
+        }
+      }
+      const candidateCombos = [];
+      for (const p of pairs) {
+        for (const single of available) {
+          if (single.seatNumber < p.startNum || single.seatNumber > p.endNum) {
+            const combined = [...p.pair, single];
+            const avgDist = combined.reduce((sum, s) => sum + s.centerDist, 0) / 3;
+            candidateCombos.push({ seats: combined, score: avgDist });
+          }
+        }
+      }
+      if (candidateCombos.length > 0) {
+        candidateCombos.sort((a, b) => a.score - b.score);
+        return candidateCombos[0].seats;
+      }
+    }
+
+    // Tier 4: Fallback - k individual seats closest to true physical center
+    const sorted = [...available].sort((a, b) => a.centerDist - b.centerDist);
+    return sorted.slice(0, k);
+  }, neededCount);
+}
+
 (async () => {
   let context;
   let page;
@@ -574,7 +742,7 @@ function waitForBrowserClosed(context, page) {
         console.log(`   ${idx + 1}. Coach "${c.name}": ${c.availableCount} available seat(s)`);
       });
 
-      // 7. Select Seats: Max Available Coach First, Expanding from Middle to Up/Down
+      // 7. Select Seats: Max Available Coach First, using SmartContigCenter (SCC) Algorithm
       for (const coach of coaches) {
         if (remainingNeeded <= 0) break;
         if (coach.availableCount === 0) {
@@ -598,65 +766,86 @@ function waitForBrowserClosed(context, page) {
           await page.waitForTimeout(300);
         }
 
-        const availableSeatsLocator = page.locator('button.btn-seat:not([disabled]):not(.seat-booked):not(.sleeper-gray)');
-        const total = await availableSeatsLocator.count();
+        let coachExhausted = false;
+        let attemptRound = 0;
 
-        if (total === 0) {
-          console.log(`⚠️ No selectable seats in Coach "${coach.name}". Checking next coach...`);
-          continue;
-        }
+        while (remainingNeeded > 0 && !coachExhausted && attemptRound < 3) {
+          attemptRound++;
 
-        const mid = Math.floor(total / 2);
-        const targetIndices = [];
-        let offset = 0;
-        const pickCount = Math.min(remainingNeeded, total);
+          // Compute optimal contiguous, center-weighted seats on the live layout
+          const optimalSeats = await getOptimalSeatsInCurrentCoach(page, remainingNeeded);
 
-        while (targetIndices.length < pickCount) {
-          const idx1 = mid + offset;
-          if (idx1 < total && !targetIndices.includes(idx1)) {
-            targetIndices.push(idx1);
+          if (!optimalSeats || optimalSeats.length === 0) {
+            console.log(`⚠️ No selectable seats in Coach "${coach.name}". Checking next coach...`);
+            break;
           }
-          if (targetIndices.length >= pickCount) break;
 
-          const idx2 = mid - offset - 1;
-          if (idx2 >= 0 && !targetIndices.includes(idx2)) {
-            targetIndices.push(idx2);
-          }
-          offset++;
-        }
+          console.log(`   👉 Optimal cluster in Coach "${coach.name}": [${optimalSeats.map(s => s.title).join(', ')}] (Targeting ${Math.min(remainingNeeded, optimalSeats.length)} seat(s))`);
 
-        console.log(`   👉 Targeted middle-outward seats in Coach "${coach.name}": indices [${targetIndices.map(i => i + 1).join(', ')}] of ${total}`);
+          let anySuccessInRound = false;
+          const allSeatBtns = page.locator('button.btn-seat');
 
-        for (const idx of targetIndices) {
-          const alertPopupBefore = page.locator('.swal2-popup:visible, .swal2-modal:visible');
-          if (await alertPopupBefore.isVisible().catch(() => false)) {
-            const swalMsg = (await page.locator('.swal2-title, .swal2-html-container').first().innerText().catch(() => '')).trim();
-            if (swalMsg) {
-              console.log(`   ⚠️ Portal Alert detected: "${swalMsg}". Dismissing...`);
-              await page.locator('button.swal2-confirm, button:has-text("OKAY"), button:has-text("OK")').first().click().catch(() => {});
-              await page.waitForTimeout(400);
-              break;
+          for (const target of optimalSeats) {
+            if (remainingNeeded <= 0) break;
+
+            const targetBtn = allSeatBtns.nth(target.domIndex);
+            if (!(await targetBtn.isVisible().catch(() => false))) {
+              continue;
             }
-          }
 
-          const seatBtn = availableSeatsLocator.nth(idx);
-          if (await seatBtn.isVisible().catch(() => false)) {
-            const seatTitle = (await seatBtn.getAttribute('title')) || (await seatBtn.innerText()).trim();
-            console.log(`   👉 Clicking middle seat: ${seatTitle || ('#' + (idx + 1))}`);
-            await seatBtn.click().catch(() => {});
-            await page.waitForTimeout(700);
+            console.log(`   👉 Clicking seat: ${target.title}`);
+            await targetBtn.click().catch(() => {});
+            await page.waitForTimeout(600);
 
+            // Check if SweetAlert appeared upon clicking seat
             const alertPopupAfter = page.locator('.swal2-popup:visible, .swal2-modal:visible');
             if (await alertPopupAfter.isVisible().catch(() => false)) {
               const swalMsg = (await page.locator('.swal2-title, .swal2-html-container').first().innerText().catch(() => '')).trim();
               if (swalMsg) {
-                console.log(`   ⚠️ Portal Alert on seat click: "${swalMsg}"`);
+                console.log(`   ⚠️ Portal Alert on seat ${target.title}: "${swalMsg}". Dismissing and trying next seat...`);
                 await page.locator('button.swal2-confirm, button:has-text("OKAY"), button:has-text("OK")').first().click().catch(() => {});
                 await page.waitForTimeout(400);
-                break;
+
+                // Mark seat as booked in DOM so it won't be re-selected
+                await page.evaluate((domIdx) => {
+                  const btns = document.querySelectorAll('button.btn-seat');
+                  if (btns[domIdx]) btns[domIdx].classList.add('seat-booked');
+                }, target.domIndex).catch(() => {});
+
+                // Do not abort the coach; proceed to next available seat
+                continue;
               }
             }
-            remainingNeeded--;
+
+            // Check if seat is selected or cart count increased
+            const isNowSelected = await page.evaluate((domIdx) => {
+              const btns = document.querySelectorAll('button.btn-seat');
+              return btns[domIdx] ? (btns[domIdx].classList.contains('seat-selected') || btns[domIdx].classList.contains('selected')) : false;
+            }, target.domIndex).catch(() => false);
+
+            if (isNowSelected) {
+              console.log(`   ✅ Seat ${target.title} successfully locked in cart!`);
+              remainingNeeded--;
+              anySuccessInRound = true;
+            } else {
+              // Re-check overall selected seats from DOM table
+              const currentCartCount = await page.$$eval(
+                '.selected-seats-list .single-selected-seat-btn, button.btn-seat.seat-selected, #tbl_price_details tbody tr td:nth-child(2)',
+                els => els.length
+              ).catch(() => 0);
+
+              const newlySelected = currentCartCount - (4 - (remainingNeeded));
+              if (newlySelected > 0) {
+                console.log(`   ✅ Seat ${target.title} verified in cart!`);
+                remainingNeeded = Math.max(0, 4 - currentCartCount);
+                anySuccessInRound = true;
+              }
+            }
+          }
+
+          if (!anySuccessInRound) {
+            console.log(`   ⚠️ No additional seats could be secured in Coach "${coach.name}".`);
+            coachExhausted = true;
           }
         }
 

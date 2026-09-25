@@ -223,40 +223,202 @@ export class SeatSelectionPage extends BasePage {
   }
 
   /**
-   * Select middle seats expanding outward (middle to up or down)
+   * SmartContigCenter (SCC) Algorithm:
+   * Selects optimal contiguous, cluster-aware, and center-weighted seats for the current coach.
    */
   async selectMiddleSeats(maxCount: number = 4): Promise<string[]> {
-    const availableSeats = this.page.locator('button.btn-seat:not([disabled]):not(.seat-booked):not(.sleeper-gray)');
-    const total = await availableSeats.count();
-    const seatsToSelect = Math.min(maxCount, total);
     const selected: string[] = [];
 
-    if (seatsToSelect === 0) return selected;
+    // Evaluate live seat layout and find optimal contiguous / center-weighted cluster
+    const optimalSeats = await this.page.evaluate((k) => {
+      const allSeatElements = Array.from(document.querySelectorAll('button.btn-seat'));
+      if (!allSeatElements.length) return [];
 
-    const mid = Math.floor(total / 2);
-    const targetIndices: number[] = [];
-    let offset = 0;
+      const parsed = allSeatElements.map((el, idx) => {
+        const title = (el.getAttribute('title') || (el as HTMLElement).innerText || '').trim();
+        const matches = title.match(/\d+/g);
+        const seatNumber = matches ? parseInt(matches[matches.length - 1], 10) : (idx + 1);
 
-    while (targetIndices.length < seatsToSelect) {
-      const idx1 = mid + offset;
-      if (idx1 < total && !targetIndices.includes(idx1)) {
-        targetIndices.push(idx1);
+        const isBooked = (el as HTMLButtonElement).disabled ||
+          el.classList.contains('seat-booked') ||
+          el.classList.contains('sleeper-gray') ||
+          el.classList.contains('disabled');
+        const isSelected = el.classList.contains('seat-selected') || el.classList.contains('selected');
+        const isAvailable = !isBooked && !isSelected;
+
+        return {
+          domIndex: idx,
+          title: title || String(seatNumber),
+          seatNumber,
+          isAvailable,
+          isSelected,
+        };
+      });
+
+      const seatNumbers = parsed.map(s => s.seatNumber);
+      const minNum = Math.min(...seatNumbers);
+      const maxNum = Math.max(...seatNumbers);
+      const trueCenter = (minNum === maxNum) ? (parsed.length / 2) : ((minNum + maxNum) / 2);
+
+      const available = parsed
+        .filter(s => s.isAvailable)
+        .map(s => ({
+          ...s,
+          centerDist: Math.abs(s.seatNumber - trueCenter),
+        }));
+
+      if (available.length === 0) return [];
+      if (available.length <= k) {
+        return available.sort((a, b) => a.centerDist - b.centerDist);
       }
-      if (targetIndices.length >= seatsToSelect) break;
 
-      const idx2 = mid - offset - 1;
-      if (idx2 >= 0 && !targetIndices.includes(idx2)) {
-        targetIndices.push(idx2);
+      available.sort((a, b) => a.seatNumber - b.seatNumber);
+
+      // Group into contiguous blocks
+      const blocks: typeof available[] = [];
+      let currentBlock: typeof available = [available[0]];
+
+      for (let i = 1; i < available.length; i++) {
+        const prev = available[i - 1];
+        const curr = available[i];
+        if (curr.seatNumber === prev.seatNumber + 1) {
+          currentBlock.push(curr);
+        } else {
+          blocks.push(currentBlock);
+          currentBlock = [curr];
+        }
       }
-      offset++;
-    }
+      if (currentBlock.length > 0) {
+        blocks.push(currentBlock);
+      }
 
-    for (const idx of targetIndices) {
-      const seat = availableSeats.nth(idx);
-      const name = (await seat.getAttribute('title')) || (await seat.innerText()).trim();
-      await seat.click();
-      selected.push(name);
-      await this.page.waitForTimeout(400);
+      // Tier 1: Single contiguous block of k seats closest to true physical center
+      const kBlocks: Array<{ seats: typeof available; avgDist: number }> = [];
+      for (const block of blocks) {
+        if (block.length >= k) {
+          for (let w = 0; w <= block.length - k; w++) {
+            const window = block.slice(w, w + k);
+            const avgDist = window.reduce((sum, s) => sum + s.centerDist, 0) / k;
+            kBlocks.push({ seats: window, avgDist });
+          }
+        }
+      }
+
+      if (kBlocks.length > 0) {
+        kBlocks.sort((a, b) => a.avgDist - b.avgDist);
+        return kBlocks[0].seats;
+      }
+
+      // Tier 2: If k === 4, try two pairs (2 + 2) or (3 + 1)
+      if (k === 4) {
+        const pairs: Array<{ pair: typeof available; avgDist: number; startNum: number; endNum: number }> = [];
+        for (const block of blocks) {
+          for (let w = 0; w <= block.length - 2; w++) {
+            const pair = block.slice(w, w + 2);
+            const avgDist = (pair[0].centerDist + pair[1].centerDist) / 2;
+            pairs.push({ pair, avgDist, startNum: pair[0].seatNumber, endNum: pair[1].seatNumber });
+          }
+        }
+
+        const candidateCombos: Array<{ seats: typeof available; score: number }> = [];
+        for (let p1 = 0; p1 < pairs.length; p1++) {
+          for (let p2 = p1 + 1; p2 < pairs.length; p2++) {
+            const pair1 = pairs[p1];
+            const pair2 = pairs[p2];
+            if (pair1.endNum < pair2.startNum || pair2.endNum < pair1.startNum) {
+              const combined = [...pair1.pair, ...pair2.pair];
+              const avgDist = combined.reduce((sum, s) => sum + s.centerDist, 0) / 4;
+              const gap = Math.abs(pair1.startNum - pair2.startNum);
+              candidateCombos.push({ seats: combined, score: avgDist + (gap * 0.05) });
+            }
+          }
+        }
+
+        const triplets: Array<{ triplet: typeof available; avgDist: number; startNum: number; endNum: number }> = [];
+        for (const block of blocks) {
+          for (let w = 0; w <= block.length - 3; w++) {
+            const triplet = block.slice(w, w + 3);
+            const avgDist = triplet.reduce((sum, s) => sum + s.centerDist, 0) / 3;
+            triplets.push({ triplet, avgDist, startNum: triplet[0].seatNumber, endNum: triplet[2].seatNumber });
+          }
+        }
+
+        for (const trip of triplets) {
+          for (const single of available) {
+            if (single.seatNumber < trip.startNum || single.seatNumber > trip.endNum) {
+              const combined = [...trip.triplet, single];
+              const avgDist = combined.reduce((sum, s) => sum + s.centerDist, 0) / 4;
+              const gap = Math.min(Math.abs(single.seatNumber - trip.startNum), Math.abs(single.seatNumber - trip.endNum));
+              candidateCombos.push({ seats: combined, score: avgDist + (gap * 0.05) });
+            }
+          }
+        }
+
+        if (candidateCombos.length > 0) {
+          candidateCombos.sort((a, b) => a.score - b.score);
+          return candidateCombos[0].seats;
+        }
+      }
+
+      // Tier 3: If k === 3, try (2 + 1)
+      if (k === 3) {
+        const pairs: Array<{ pair: typeof available; startNum: number; endNum: number }> = [];
+        for (const block of blocks) {
+          for (let w = 0; w <= block.length - 2; w++) {
+            const pair = block.slice(w, w + 2);
+            pairs.push({ pair, startNum: pair[0].seatNumber, endNum: pair[1].seatNumber });
+          }
+        }
+        const candidateCombos: Array<{ seats: typeof available; score: number }> = [];
+        for (const p of pairs) {
+          for (const single of available) {
+            if (single.seatNumber < p.startNum || single.seatNumber > p.endNum) {
+              const combined = [...p.pair, single];
+              const avgDist = combined.reduce((sum, s) => sum + s.centerDist, 0) / 3;
+              candidateCombos.push({ seats: combined, score: avgDist });
+            }
+          }
+        }
+        if (candidateCombos.length > 0) {
+          candidateCombos.sort((a, b) => a.score - b.score);
+          return candidateCombos[0].seats;
+        }
+      }
+
+      // Tier 4: Fallback - k individual seats closest to true physical center
+      const sorted = [...available].sort((a, b) => a.centerDist - b.centerDist);
+      return sorted.slice(0, k);
+    }, maxCount);
+
+    if (!optimalSeats || optimalSeats.length === 0) return selected;
+
+    const allSeatBtns = this.page.locator('button.btn-seat');
+
+    for (const target of optimalSeats) {
+      if (selected.length >= maxCount) break;
+
+      const targetBtn = allSeatBtns.nth(target.domIndex);
+      if (!(await targetBtn.isVisible().catch(() => false))) continue;
+
+      await targetBtn.click().catch(() => {});
+      await this.page.waitForTimeout(500);
+
+      // Check if SweetAlert appeared upon clicking seat
+      const alertPopup = this.page.locator('.swal2-popup:visible, .swal2-modal:visible');
+      if (await alertPopup.isVisible().catch(() => false)) {
+        await this.page.locator('button.swal2-confirm, button:has-text("OKAY"), button:has-text("OK")').first().click().catch(() => {});
+        await this.page.waitForTimeout(300);
+
+        // Mark as booked in DOM so it won't be re-selected
+        await this.page.evaluate((domIdx) => {
+          const btns = document.querySelectorAll('button.btn-seat');
+          if (btns[domIdx]) btns[domIdx].classList.add('seat-booked');
+        }, target.domIndex).catch(() => {});
+
+        continue;
+      }
+
+      selected.push(target.title);
     }
 
     return selected;
@@ -264,7 +426,8 @@ export class SeatSelectionPage extends BasePage {
 
   /**
    * Greedy multi-coach selection: Select up to targetCount seats prioritizing
-   * the coach with the maximum available seats, and seamlessly switching
+   * the coach with the maximum available seats, using SmartContigCenter (SCC)
+   * to pick contiguous, center-weighted seats and seamlessly switching
    * to other coaches in the same session if needed.
    */
   async selectSeatsAcrossBestCoaches(targetCount: number = 4): Promise<string[]> {
