@@ -40,10 +40,13 @@ ticketbycheck/
 npm install
 ```
 
-### 2. Install Playwright Chromium Browser
+### 2. Install Browsers (Optional if Google Chrome is already installed)
 ```bash
+# Optional: Installs Playwright's bundled Chromium
 npx playwright install chromium
 ```
+> 💡 **Automatic Google Chrome Fallback:**  
+> If you do **not** have Chromium installed, all test suites and scripts will **automatically detect it and fall back to your local Google Chrome** installation (`channel: 'chrome'`). You can also force Google Chrome anytime with `BROWSER_CHANNEL=chrome` or `npm run test:chrome`.
 
 ### 3. Configure `.env`
 Credentials and search parameters are managed in `.env`:

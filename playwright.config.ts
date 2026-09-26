@@ -1,9 +1,32 @@
-import { defineConfig, devices } from '@playwright/test';
+import { defineConfig, devices, chromium } from '@playwright/test';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 
 // Load environment variables from .env file
 dotenv.config({ path: path.resolve(__dirname, '.env') });
+
+/**
+ * Resolves browser channel:
+ * If BROWSER_CHANNEL is specified in .env, use that.
+ * If bundled Chromium is missing, automatically fall back to Google Chrome.
+ */
+function resolveBrowserChannel(): string | undefined {
+  if (process.env.BROWSER_CHANNEL) {
+    return process.env.BROWSER_CHANNEL;
+  }
+  try {
+    const execPath = chromium.executablePath();
+    if (fs.existsSync(execPath)) {
+      return undefined; // Use default bundled Chromium
+    }
+  } catch {
+    // If executable check fails
+  }
+  return 'chrome'; // Automatic fallback to Google Chrome
+}
+
+const activeChannel = resolveBrowserChannel();
 
 export default defineConfig({
   testDir: './tests',
@@ -38,6 +61,7 @@ export default defineConfig({
       use: {
         ...devices['Desktop Chrome'],
         locale: 'en-US',
+        ...(activeChannel ? { channel: activeChannel } : {}),
       },
     },
   ],

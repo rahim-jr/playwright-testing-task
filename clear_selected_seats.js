@@ -1,4 +1,4 @@
-const { chromium } = require('@playwright/test');
+const { launchPersistentContext } = require('./utils/browserHelper');
 const dotenv = require('dotenv');
 const path = require('path');
 
@@ -9,7 +9,7 @@ dotenv.config({ path: path.resolve(__dirname, '.env') });
   try {
     console.log('🧹 Starting Bangladesh Railway Cart & Seat Clearer...');
 
-    context = await chromium.launchPersistentContext('/tmp/railway-chrome-user-data', {
+    context = await launchPersistentContext('/tmp/railway-chrome-user-data', {
       headless: false,
       slowMo: 300,
       viewport: { width: 1366, height: 768 },

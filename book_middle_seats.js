@@ -1,4 +1,4 @@
-const { chromium } = require('@playwright/test');
+const { launchPersistentContext } = require('./utils/browserHelper');
 const { exec } = require('child_process');
 const dotenv = require('dotenv');
 const path = require('path');
@@ -369,7 +369,7 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
     console.log(`ℹ️ Workflow: Books immediately if seats are free, or continuously monitors until tickets release.`);
     console.log(`🛡️ Auto-Relogin: Enabled. If the site unexpectedly logs you out, the script will automatically re-authenticate and resume.`);
 
-    context = await chromium.launchPersistentContext('/tmp/railway-chrome-user-data', {
+    context = await launchPersistentContext('/tmp/railway-chrome-user-data', {
       headless: false,
       slowMo: 300,
       viewport: { width: 1366, height: 768 },

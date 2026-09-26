@@ -1,4 +1,4 @@
-const { chromium } = require('@playwright/test');
+const { launchBrowser } = require('./utils/browserHelper');
 const dotenv = require('dotenv');
 const path = require('path');
 
@@ -6,7 +6,7 @@ dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 (async () => {
   console.log('Launching browser on your desktop...');
-  const browser = await chromium.launch({
+  const browser = await launchBrowser({
     headless: false,
     slowMo: 600, // Smooth pacing so actions are easily visible
   });
