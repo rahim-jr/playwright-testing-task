@@ -9,8 +9,6 @@
     "clear": "npm run clean",
     "book:middle": "node book_middle_seats.js",
     "book:clear": "node book_middle_seats.js --clear",
-    "book:watch": "node book_middle_seats.js --watch",
-    "book:snipe": "node book_middle_seats.js --watch --clear",
     "book:chrome": "BROWSER_CHANNEL=chrome node book_middle_seats.js",
     "test:login": "playwright test tests/login.spec.ts",
     "test:booking": "playwright test tests/booking.spec.ts",

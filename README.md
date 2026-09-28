@@ -1,8 +1,23 @@
-# playwright-testing-task
+# Bangladesh Railway E-Ticketing SQA Automation & Seat Sniper (`ticketbycheck`)
 
-## Bangladesh Railway E-Ticketing SQA Automation Suite (`ticketbycheck`)
+High-speed automated SQA testing framework and ticket booking sniper built with **Playwright (TypeScript / Node.js)** for the Bangladesh Railway e-ticketing portal: [`https://eticket.railway.gov.bd`](https://eticket.railway.gov.bd).
 
-Automated SQA testing framework and seat booking script built with **Playwright (TypeScript / Node.js)** for the Bangladesh Railway e-ticket portal: [`https://eticket.railway.gov.bd`](https://eticket.railway.gov.bd).
+Designed specifically for the high-concurrency 8:00 AM ticket drop window to lock optimal contiguous middle seats in cart in **< 2 seconds**.
+
+---
+
+## ⚡ Quick Command Reference
+
+| Command | Action | Behavior |
+| :--- | :--- | :--- |
+| `npm run book:middle` | **Live Booking / Drop Watchdog** | Snipes seats, locks them in cart, triggers audio chime & desktop alert, and **leaves browser open** for manual OTP & payment. |
+| `npm run book:middle --clear` | **SQA Test Mode (Auto-Unselect)** | Selects seats, holds them on screen for **6s** for visual verification, **automatically unselects** all seats, and exits cleanly. |
+| `npm run book:clear` | **Alias for Test Mode** | Same as `npm run book:middle --clear`. |
+| `npm run book:chrome` | **Run with Google Chrome** | Forces system Google Chrome binary (`channel: chrome`) instead of bundled Chromium. |
+| `npm test` | **Run Full Test Suite** | Runs all 8 Playwright test specs across login, search, and booking. |
+| `npm run test:headed` | **Run Tests Headed** | Runs Playwright tests with a visible browser window on your desktop. |
+| `npm run test:ui` | **Playwright UI Runner** | Launches Playwright's interactive visual UI test runner. |
+| `npm run clean` | **Clean Workspace** | Deletes test reports, videos, screenshots, and temporary Chrome profile caches. |
 
 ---
 
@@ -11,8 +26,8 @@ Automated SQA testing framework and seat booking script built with **Playwright 
 ```
 ticketbycheck/
 ├── pages/
-│   ├── BasePage.ts           # Common page actions, popup/disclaimer dismissals, navigation
-│   ├── LoginPage.ts          # Page Object for /login (Turnstile, password toggle, auth)
+│   ├── BasePage.ts           # Common page interactions, modal/disclaimer dismissals, navigation
+│   ├── LoginPage.ts          # Page Object for /login (Turnstile, eye toggle, auth form)
 │   ├── SearchPage.ts         # Page Object for train searching and autocomplete selection
 │   └── SeatSelectionPage.ts  # Page Object for coach selection and seat layouts
 ├── tests/
@@ -20,151 +35,121 @@ ticketbycheck/
 │   ├── booking.spec.ts       # Train search, route selection, class validation
 │   └── seatSelection.spec.ts # Dhaka to Cox's Bazar search & seat verification
 ├── utils/
+│   ├── browserHelper.js      # Persistent browser launcher with automatic Google Chrome fallback
+│   ├── clean.js              # Cache and report cleanup utility
 │   └── testData.ts           # Environment variable parser and test fixtures
-├── book_middle_seats.js      # Headed automation: selects up to 4 middle seats first
-├── demo_browser.js           # Visual browser demo script
-├── .env                      # Credentials & runtime parameters
+├── book_middle_seats.js      # Core high-speed sniper, watchdog loop, SCC algorithm, & failover
+├── demo_browser.js           # Interactive browser demo script
+├── .env                      # Local credentials & runtime booking parameters (git-ignored)
 ├── .env.example              # Environment variable template
 ├── playwright.config.ts      # Playwright test configuration
-├── package.json              # NPM dependencies & test runner scripts
+├── package.json              # NPM dependencies & scripts
 ├── tsconfig.json             # TypeScript configuration
-└── README.md                 # Documentation and usage guide
+└── README.md                 # Complete documentation and usage guide
 ```
 
 ---
 
-## 🚀 Setup & Installation
+## ⚙️ Configuration Guide (`.env`)
 
-### 1. Install Dependencies
-```bash
-npm install
-```
+Create or edit your local `.env` file with your credentials and journey details:
 
-### 2. Install Browsers (Optional if Google Chrome is already installed)
-```bash
-# Optional: Installs Playwright's bundled Chromium
-npx playwright install chromium
-```
-> 💡 **Automatic Google Chrome Fallback:**  
-> If you do **not** have Chromium installed, all test suites and scripts will **automatically detect it and fall back to your local Google Chrome** installation (`channel: 'chrome'`). You can also force Google Chrome anytime with `BROWSER_CHANNEL=chrome` or `npm run test:chrome`.
-
-### 3. Configure `.env`
-Credentials and search parameters are managed in `.env`:
-```env
-# Bangladesh Railway E-Ticket Credentials
+```ini
+# Bangladesh Railway E-Ticket Account
 RAILWAY_MOBILE_NUMBER=01XXXXXXXXX
 RAILWAY_PASSWORD=YourPasswordHere
 
-# Base URL
+# Base URL (default: https://eticket.railway.gov.bd)
 BASE_URL=https://eticket.railway.gov.bd
 
-# Execution Mode (true for headless, false for visible browser)
+# Browser execution mode (false: visible browser window, true: headless)
+# NOTE: Set to false for 8:00 AM drops so Cloudflare Turnstile passes and OTP can be typed.
 HEADLESS=false
 
-# Test Booking Parameters
+# Optional Browser Channel: leave blank for auto-detection, or set 'chrome'
+# BROWSER_CHANNEL=chrome
+
+# Route & Journey Parameters
 FROM_STATION=Dhaka
 TO_STATION=Chattogram
-JOURNEY_DATE=30-Sep-2026
-JOURNEY_CLASS=SNIGDHA
+JOURNEY_DATE=09-Oct-2026
+
+# Target Train Number (Optional: leave empty to snipe any available train)
+TRAIN_NUMBER=788
+
+# Number of Seats to Book (1 to 4, Bangladesh Railway max is 4)
+SEAT_COUNT=4
+
+# Class Priority with Multi-Class Failover (Comma-separated in priority order)
+JOURNEY_CLASS=SNIGDHA,S_CHAIR,F_SEAT
+
+# Watchdog Polling Interval in seconds (default: 1)
+REFRESH_SECOND=1
 ```
 
 ---
 
-## 🎯 Running Automated Seat Booking (Unified Instant Book + Auto-Watchdog)
+## 🧠 Core Architecture & Capabilities
 
-`book:middle` and `book:watch` are now **merged into one unified smart command**:
-* **If tickets are already available:** It selects the maximum-seat coach and books the 4 middle seats immediately.
-* **If tickets are NOT yet released (0 seats / sold out / pre-drop):** It **automatically transitions into Watchdog Mode**, monitoring the search page (every 5–8s with jitter) until tickets drop or unpaid holds release, and then snipes them with audible & desktop alerts!
+### 1. 8:00 AM Drop Watchdog & SweetAlert Neutralizer
+- **The Problem:** At 8:00 AM sharp, railway servers frequently lag by 15–90 seconds. If an automated script refreshes and sees *"Tickets not released yet"*, clicking "OKAY" triggers Shohoz's Angular SPA redirect back to `/`, breaking the search flow and wasting critical seconds.
+- **The Solution:** The script includes a **SweetAlert Neutralizer** that removes popup DOM containers and backdrops directly without triggering Angular route navigations. If redirected away, the **Search URL Sentinel** immediately forces navigation back to the search URL.
 
-### 1. Unified Seat Booking & Auto-Sniper (Headed Mode):
-```bash
-npm run book:middle
-```
+### 2. SmartContigCenter (SCC) Algorithm
+- Evaluates live coach seat buttons (`button.btn-seat`) in browser memory in **< 15ms**.
+- **Tier 1:** Finds a contiguous block of `k = SEAT_COUNT` consecutive seats closest to the true physical center of the coach.
+- **Tier 2 (Pair Combos):** If a single contiguous block of 4 is unavailable, groups into 2 + 2 pairs closest to center.
+- **Tier 3 (Triplets + 1):** If pairs are split, groups into 3 + 1.
+- **Tier 4 (Center Weighting):** Fallback to individual seats closest to center.
 
-### 2. Clear Previous Work & Run Unified Booking:
-```bash
-npm run book:clear
-```
+### 3. Multi-Class Dynamic Failover
+- If your first-choice class (e.g. `SNIGDHA`) sells out across all coaches in the morning rush, **the script does not stop**.
+- It immediately clicks your fallback class (e.g. `S_CHAIR`) on the same page (< 200ms) without reloading.
+- Automatically clears any partial seats from the first class (since Bangladesh Railway does not allow mixing classes in a single booking) and locks a full set of `SEAT_COUNT` seats in the fallback class.
 
-### 🛠️ What the Automation Does:
-1. **Pre-Login / Session Warm-up:** Logs in automatically ahead of ticket drops using persistent Chrome context (`/tmp/railway-chrome-user-data`).
-2. **Continuous Monitoring (Watchdog Loop):** Periodically re-queries the search page with human-like jitter (5–8s) to avoid Cloudflare rate limiting until tickets appear.
-3. **Instant Snipe (The exact second tickets drop):**
-   - Fires **audible system chimes** and urgent **Linux desktop notifications** (`notify-send`).
-   - Prioritizes the train/class with the **maximum available seats**.
-   - Clicks **"BOOK NOW"** in milliseconds.
-4. **Coach Inventory Scanner (Max to Min):**
-   - Scans and ranks all coach buttons (e.g. *KA*, *KHA*, *GA*) by free seat count.
-   - Targets the coach with the highest seat inventory first.
-5. **Middle-Outward Seat Selection:**
-   - Calculates the center seat index and expands symmetrically (`mid`, `mid + offset`, `mid - offset - 1`).
-6. **Multi-Coach Fallback in a Single Session:**
-   - If the top coach has fewer than 4 seats, selects available middle seats in that coach, and seamlessly switches to the 2nd best coach in the same session to complete the 4 tickets.
-7. **Hands over to User:** Keeps the browser open indefinitely at the active **"CONTINUE PURCHASE"** screen so you have the full 15-minute window to enter passenger details and pay.
+### 4. Headless vs. Headed Execution & OTP Handoff
+- In pure headless Chromium (`headless: true`), Cloudflare Turnstile blocks automated execution with `Error: 600010`.
+- In headed mode (`HEADLESS=false`), Turnstile passes in < 300ms.
+- **OTP / Payment Handoff:** Once seats are locked in your cart, Bangladesh Railway holds them on the server for **5 minutes**. The script keeps the headed browser open on your screen at the active booking / payment screen so you can review passenger details, select bKash / Nagad / Cards, and enter the SMS OTP directly.
 
-> ⚠️ **Note on the 15-Minute Seat Lock:**  
-> When seats are selected, Bangladesh Railway (Shohoz) locks them to your account for **15 minutes**. If 4 seats are locked from a previous run, run `npm run book:clear` or `npm run clear:seats` to release them.
+### 5. Configurable Ticket Count (`SEAT_COUNT=1..4`)
+- Set `SEAT_COUNT=1` for single center seats, `SEAT_COUNT=2` for pairs, or `SEAT_COUNT=4` for full family bookings.
+- Cart counting is strictly deduplicated using DOM Sets, preventing double-counting between layout buttons and fare summary tables.
 
 ---
 
-## 🧪 Running Playwright Test Suites
+## 🧪 Playwright SQA Test Suites
 
-### Run All Test Specs (8 tests):
+The repository contains automated Playwright test suites covering login, authentication, form validation, and route selection:
+
 ```bash
+# Run all Playwright test specifications
 npm test
-```
 
-### Run Tests in Visible Browser (Headed Mode):
-```bash
+# Run tests with visible browser window
 npm run test:headed
-```
 
-### Run with Playwright Interactive UI Mode:
-```bash
+# Run specific suites
+npm run test:login        # Login page, eye toggle, form validation
+npm run test:booking      # Search page, autocomplete, datepicker
+npm run test:coxsbazar    # Dhaka to Cox's Bazar end-to-end booking flow
+
+# Interactive UI mode
 npm run test:ui
-```
 
-### Run Specific Test Suites:
-- **Login tests only:**
-  ```bash
-  npm run test:login
-  ```
-- **Booking & search tests only:**
-  ```bash
-  npm run test:booking
-  ```
-- **Cox's Bazar route test:**
-  ```bash
-  npm run test:coxsbazar
-  ```
-
-### View HTML Test Report:
-```bash
+# Generate and view HTML test report
 npm run report
 ```
 
-### Run Playwright Codegen (Interactive Recorder):
-```bash
-npm run codegen
-```
-
 ---
 
-## 🧹 Clearing Previous Work & Cache
+## 🧹 Cleanup Utility
 
-To clear artifacts, test reports, browser session data, or previous seat locks:
+To clean test artifacts, HTML reports, and cached browser profile data:
 
-### 1. Clear Previous Test Artifacts & Browser Profile:
-Cleans `test-results/`, `playwright-report/`, log files, and `/tmp/railway-chrome-user-data`:
 ```bash
-npm run clear
-# or
 npm run clean
+# or
+npm run clear
 ```
-
-### 2. Auto-Unselect Test Verification (`--clear`):
-Runs the seat selection test, holds the selected tickets on screen for 6 seconds for visual verification, and automatically unselects them to leave your cart clean:
-```bash
-npm run book:middle --clear
-```
-
+This safely removes `test-results/`, `playwright-report/`, `.cache/`, and resets `/tmp/railway-chrome-user-data`.
