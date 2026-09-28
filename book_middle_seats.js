@@ -508,10 +508,11 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
       .filter(Boolean);
     const primaryClass = preferredClasses[0] || 'SNIGDHA';
     const targetTrainNumber = (process.env.TRAIN_NUMBER || '').trim();
+    const requestedSeatCount = Math.min(4, Math.max(1, parseInt(process.env.SEAT_COUNT || process.env.TOTAL_SEATS || process.env.TICKET_COUNT || '4', 10)));
 
     const searchUrl = `https://eticket.railway.gov.bd/booking/train/search?fromcity=${encodeURIComponent(fromCity)}&tocity=${encodeURIComponent(toCity)}&doj=${encodeURIComponent(journeyDate)}&class=${encodeURIComponent(primaryClass)}`;
 
-    console.log(`🚂 Navigating to route: ${fromCity} -> ${toCity} on ${journeyDate} (Classes: ${preferredClasses.join(' > ')}${targetTrainNumber ? ', Train: #' + targetTrainNumber : ''})...`);
+    console.log(`🚂 Navigating to route: ${fromCity} -> ${toCity} on ${journeyDate} (Classes: ${preferredClasses.join(' > ')}${targetTrainNumber ? ', Train: #' + targetTrainNumber : ''}, Requested Seats: ${requestedSeatCount})...`);
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
 
     // 3. Continuous Watchdog / Polling Loop (Seat Snipe Routine)
@@ -677,7 +678,7 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
         } else {
           console.log(`\n🚨🚨 [TICKETS RELEASED / DROPPED!] 🚨🚨`);
           console.log(`🎯 Primary target acquired: ${selectedTrainDescription}`);
-          triggerAlertNotification('Tickets Released!', `Found available tickets on ${best.trainTitle}! Sniping 4 middle seats now...`);
+          triggerAlertNotification('Tickets Released!', `Found available tickets on ${best.trainTitle}! Sniping ${requestedSeatCount} middle seats now...`);
         }
         break;
       }
@@ -830,10 +831,10 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
       console.log(`🛒 Seats in cart after clearing: ${alreadySelected.length}`);
     }
 
-    let remainingNeeded = Math.max(0, 4 - alreadySelected.length);
+    let remainingNeeded = Math.max(0, requestedSeatCount - alreadySelected.length);
 
     if (remainingNeeded === 0) {
-      console.log('🎉 Maximum 4 tickets are ALREADY selected in your cart!');
+      console.log(`🎉 Requested ${requestedSeatCount} ticket(s) are ALREADY selected in your cart!`);
       console.log('💡 Tip: Run with "--clear" to clear previous selections and pick fresh middle seats.');
     } else {
       // 6. Scan Coaches to rank by Maximum Available Seats (High-Speed In-Memory DOM Parsing)
@@ -888,7 +889,7 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
             type: 'none',
             index: 0,
             name: 'Main Coach',
-            availableCount: 4
+            availableCount: requestedSeatCount
           });
         }
       }
@@ -1006,8 +1007,8 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
             const isInCart = isNowSelected || currentCartSeats.includes(target.title) || currentCartSeats.some(s => s.endsWith(String(target.seatNumber)));
 
             if (isInCart) {
-              console.log(`   ✅ Seat ${target.title} successfully locked in cart! (Cart: ${currentCartSeats.length}/4 [${currentCartSeats.join(', ')}])`);
-              remainingNeeded = Math.max(0, 4 - currentCartSeats.length);
+              console.log(`   ✅ Seat ${target.title} successfully locked in cart! (Cart: ${currentCartSeats.length}/${requestedSeatCount} [${currentCartSeats.join(', ')}])`);
+              remainingNeeded = Math.max(0, requestedSeatCount - currentCartSeats.length);
               anySuccessInRound = true;
             } else {
               console.log(`   ⚠️ Seat ${target.title} did not register in cart. Marking booked and trying next seat...`);
@@ -1028,7 +1029,7 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
         }
 
         if (remainingNeeded > 0) {
-          console.log(`   ℹ️ Still need ${remainingNeeded} more seat(s) to reach 4. Switching to next best coach in the same session...`);
+          console.log(`   ℹ️ Still need ${remainingNeeded} more seat(s) to reach ${requestedSeatCount}. Switching to next best coach in the same session...`);
         } else {
           console.log(`   🎉 Successfully selected all requested tickets!`);
         }
@@ -1037,15 +1038,15 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
 
     // Verify total seats locked in cart for this candidate class
     const currentCartSeats = await getUniqueSelectedSeatNames(page);
-    if (currentCartSeats.length >= 4) {
-      console.log(`🎉 Successfully locked all ${currentCartSeats.length} requested tickets in [${candidate.blockText}]!`);
+    if (currentCartSeats.length >= requestedSeatCount) {
+      console.log(`🎉 Successfully locked all ${currentCartSeats.length}/${requestedSeatCount} requested tickets in [${candidate.blockText}]!`);
       break; // Successfully got all tickets!
     }
 
-    // If we couldn't secure 4 seats in this class, check if another candidate class is available
+    // If we couldn't secure requested seats in this class, check if another candidate class is available
     if (cIdx < targetCandidates.length - 1) {
       const nextCandidate = targetCandidates[cIdx + 1];
-      console.log(`\n⚠️ Unable to complete booking in "${candidate.blockText}" (${currentCartSeats.length}/4 seats secured, all coaches booked or full).`);
+      console.log(`\n⚠️ Unable to complete booking in "${candidate.blockText}" (${currentCartSeats.length}/${requestedSeatCount} seats secured, all coaches booked or full).`);
       console.log(`🔄 Auto-failing over to next preferred class: "${nextCandidate.blockText}"...`);
 
       // If partial seats were selected in this class, clear them because Bangladesh Railway
@@ -1070,7 +1071,7 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
     if (finalSelected.length === 0) {
       console.log('\n⚠️ No seats could be locked in cart.');
     } else {
-      console.log(`\n🎉 Final Confirmed Selected Seats (${finalSelected.length}/4): [${finalSelected.join(', ')}]`);
+      console.log(`\n🎉 Final Confirmed Selected Seats (${finalSelected.length}/${requestedSeatCount}): [${finalSelected.join(', ')}]`);
 
       // Trigger completion celebration chime and desktop notification
       triggerAlertNotification(
