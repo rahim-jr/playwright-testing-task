@@ -162,15 +162,9 @@ npm run clear
 npm run clean
 ```
 
-### 2. Clear Previous Seat Selections and Select Fresh Middle Seats:
-If seats were selected in a previous run and are locked in your cart, clear them and book fresh middle seats:
+### 2. Auto-Unselect Test Verification (`--clear`):
+Runs the seat selection test, holds the selected tickets on screen for 6 seconds for visual verification, and automatically unselects them to leave your cart clean:
 ```bash
-npm run book:clear
-```
-
-### 3. Clear / Release Locked Seats in Cart Only:
-If you want to unselect and release locked seats without booking new ones:
-```bash
-npm run clear:seats
+npm run book:middle --clear
 ```
 

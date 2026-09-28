@@ -824,7 +824,7 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
 
     if (remainingNeeded === 0) {
       console.log(`🎉 Requested ${requestedSeatCount} ticket(s) are ALREADY selected in your cart!`);
-      console.log('💡 Tip: Run with "--clear" to clear previous selections and pick fresh middle seats.');
+      console.log('💡 Tip: Requested seats are already in your cart. Proceed to checkout in the browser.');
     } else {
       // 6. Scan Coaches to rank by Maximum Available Seats (High-Speed In-Memory DOM Parsing)
       const bogieSelect = page.locator('#select-bogie, select.selectpicker, .bogie-selection select').first();
