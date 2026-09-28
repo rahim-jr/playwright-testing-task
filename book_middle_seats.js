@@ -173,6 +173,44 @@ async function dismissSweetAlertSafely(page) {
 }
 
 /**
+ * Returns deduplicated unique list of seat names currently locked in cart
+ */
+async function getUniqueSelectedSeatNames(page) {
+  try {
+    return await page.evaluate(() => {
+      const seatNames = new Set();
+
+      document.querySelectorAll('button.btn-seat.seat-selected, button.btn-seat[class*="selected"]').forEach(el => {
+        const name = (el.getAttribute('title') || el.innerText || '').trim();
+        if (name) seatNames.add(name);
+      });
+
+      document.querySelectorAll('#tbl_price_details tbody tr td:nth-child(2)').forEach(td => {
+        const name = (td.innerText || '').trim();
+        if (name) seatNames.add(name);
+      });
+
+      document.querySelectorAll('.selected-seats-list .single-selected-seat-btn').forEach(badge => {
+        const name = (badge.innerText || '').trim();
+        if (name) seatNames.add(name);
+      });
+
+      return Array.from(seatNames);
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Returns the exact count of unique seats currently locked in cart
+ */
+async function getUniqueSelectedSeatsCount(page) {
+  const seats = await getUniqueSelectedSeatNames(page);
+  return seats.length;
+}
+
+/**
  * Checks if the page is displaying a Cloudflare or Shohoz server error / high traffic screen
  */
 async function isServerErrorOrBusy(page) {
@@ -737,10 +775,7 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
     await page.waitForTimeout(200);
 
     // Check currently selected seats in cart
-    let alreadySelected = await page.$$eval(
-      '.selected-seats-list .single-selected-seat-btn, button.btn-seat.seat-selected, #tbl_price_details tbody tr td:nth-child(2)',
-      els => els.map(e => e.innerText.trim()).filter(Boolean)
-    ).catch(() => []);
+    let alreadySelected = await getUniqueSelectedSeatNames(page);
     console.log(`🛒 Currently selected seats in cart (${alreadySelected.length}):`, alreadySelected);
 
     if (shouldClear && alreadySelected.length > 0) {
@@ -781,10 +816,7 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
       }
       await page.waitForTimeout(1000);
 
-      alreadySelected = await page.$$eval(
-        '.selected-seats-list .single-selected-seat-btn, button.btn-seat.seat-selected, #tbl_price_details tbody tr td:nth-child(2)',
-        els => els.map(e => e.innerText.trim()).filter(Boolean)
-      ).catch(() => []);
+      alreadySelected = await getUniqueSelectedSeatNames(page);
       console.log(`🛒 Seats in cart after clearing: ${alreadySelected.length}`);
     }
 
@@ -946,29 +978,26 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
               continue;
             }
 
-            // Check if seat is selected or cart count increased
-            const isNowSelected = await page.evaluate((domIdx) => {
-              const btns = document.querySelectorAll('button.btn-seat');
-              return btns[domIdx] ? (btns[domIdx].classList.contains('seat-selected') || btns[domIdx].classList.contains('selected')) : false;
-            }, target.domIndex).catch(() => false);
+            // Verify if seat is selected via DOM class or deduplicated cart inventory
+            let isNowSelected = false;
+            for (let w = 0; w < 4; w++) {
+              isNowSelected = await page.evaluate((domIdx) => {
+                const btns = document.querySelectorAll('button.btn-seat');
+                return btns[domIdx] ? (btns[domIdx].classList.contains('seat-selected') || btns[domIdx].classList.contains('selected')) : false;
+              }, target.domIndex).catch(() => false);
+              if (isNowSelected) break;
+              await page.waitForTimeout(80);
+            }
 
-            if (isNowSelected) {
-              console.log(`   ✅ Seat ${target.title} successfully locked in cart!`);
-              remainingNeeded--;
+            const currentCartSeats = await getUniqueSelectedSeatNames(page);
+            const isInCart = isNowSelected || currentCartSeats.includes(target.title) || currentCartSeats.some(s => s.endsWith(String(target.seatNumber)));
+
+            if (isInCart) {
+              console.log(`   ✅ Seat ${target.title} successfully locked in cart! (Cart: ${currentCartSeats.length}/4 [${currentCartSeats.join(', ')}])`);
+              remainingNeeded = Math.max(0, 4 - currentCartSeats.length);
               anySuccessInRound = true;
             } else {
-              // Re-check overall selected seats from DOM table
-              const currentCartCount = await page.$$eval(
-                '.selected-seats-list .single-selected-seat-btn, button.btn-seat.seat-selected, #tbl_price_details tbody tr td:nth-child(2)',
-                els => els.length
-              ).catch(() => 0);
-
-              const newlySelected = currentCartCount - (4 - (remainingNeeded));
-              if (newlySelected > 0) {
-                console.log(`   ✅ Seat ${target.title} verified in cart!`);
-                remainingNeeded = Math.max(0, 4 - currentCartCount);
-                anySuccessInRound = true;
-              }
+              console.log(`   ⚠️ Seat ${target.title} did not register in cart. Trying next seat...`);
             }
           }
 
@@ -987,12 +1016,8 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
     }
 
     // 8. Verify total selected seats and Continue button safely
-    await page.waitForTimeout(1000);
-    const rawSelected = await page.$$eval(
-      '.selected-seats-list .single-selected-seat-btn, button.btn-seat.seat-selected, .selected-seats-table-wrapper tr td:nth-child(2)',
-      els => els.map(e => e.innerText.trim() || e.getAttribute('title')).filter(Boolean)
-    ).catch(() => []);
-    const finalSelected = [...new Set(rawSelected)];
+    await page.waitForTimeout(500);
+    const finalSelected = await getUniqueSelectedSeatNames(page);
 
     if (finalSelected.length === 0) {
       console.log('\n⚠️ No seats could be locked in cart.');
