@@ -4,6 +4,20 @@ const path = require('path');
 
 dotenv.config({ path: path.resolve(__dirname, '.env') });
 
+async function dismissSweetAlertSafely(page) {
+  try {
+    return await page.evaluate(() => {
+      const swalContainer = document.querySelector('.swal2-container');
+      if (!swalContainer) return null;
+      swalContainer.remove();
+      document.body.classList.remove('swal2-shown', 'swal2-height-auto');
+      return true;
+    });
+  } catch {
+    return null;
+  }
+}
+
 (async () => {
   let context;
   try {
@@ -68,10 +82,7 @@ dotenv.config({ path: path.resolve(__dirname, '.env') });
     }
 
     // Dismiss any modal
-    if (await page.locator('.swal2-container').isVisible().catch(() => false)) {
-      await page.locator('button.swal2-confirm, button:has-text("OKAY"), button:has-text("OK")').first().click().catch(() => {});
-      await page.waitForTimeout(500);
-    }
+    await dismissSweetAlertSafely(page);
 
     const bookNowBtn = page.locator('button.book-now-btn').first();
     if (await bookNowBtn.isVisible().catch(() => false)) {
@@ -80,10 +91,7 @@ dotenv.config({ path: path.resolve(__dirname, '.env') });
     }
 
     // Dismiss notice if any
-    if (await page.locator('.swal2-container').isVisible().catch(() => false)) {
-      await page.locator('button.swal2-confirm, button:has-text("OKAY"), button:has-text("OK")').first().click().catch(() => {});
-      await page.waitForTimeout(500);
-    }
+    await dismissSweetAlertSafely(page);
 
     // Inspect selected seats
     const bogieSelect = page.locator('#select-bogie, select.selectpicker, .bogie-selection select').first();
