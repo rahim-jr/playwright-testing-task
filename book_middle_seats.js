@@ -968,10 +968,13 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
             const seatAlert = await dismissSweetAlertSafely(page);
             if (seatAlert) {
               console.log(`   ⚠️ Portal Alert on seat ${target.title}: "${seatAlert}". Dismissed, trying next seat...`);
-              // Mark seat as booked in DOM so it won't be re-selected
+              // Mark seat as booked and disabled in DOM so it won't be re-selected
               await page.evaluate((domIdx) => {
                 const btns = document.querySelectorAll('button.btn-seat');
-                if (btns[domIdx]) btns[domIdx].classList.add('seat-booked');
+                if (btns[domIdx]) {
+                  btns[domIdx].classList.add('seat-booked');
+                  btns[domIdx].disabled = true;
+                }
               }, target.domIndex).catch(() => {});
 
               // Do not abort the coach; proceed to next available seat
@@ -997,7 +1000,14 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
               remainingNeeded = Math.max(0, 4 - currentCartSeats.length);
               anySuccessInRound = true;
             } else {
-              console.log(`   ⚠️ Seat ${target.title} did not register in cart. Trying next seat...`);
+              console.log(`   ⚠️ Seat ${target.title} did not register in cart. Marking booked and trying next seat...`);
+              await page.evaluate((domIdx) => {
+                const btns = document.querySelectorAll('button.btn-seat');
+                if (btns[domIdx]) {
+                  btns[domIdx].classList.add('seat-booked');
+                  btns[domIdx].disabled = true;
+                }
+              }, target.domIndex).catch(() => {});
             }
           }
 
