@@ -144,6 +144,13 @@ function waitForBrowserClosed(context, page) {
 async function dismissSweetAlertSafely(page) {
   try {
     return await page.evaluate(() => {
+      const modal = document.querySelector('app-disclaimer-modal');
+      if (modal) {
+        const btn = modal.querySelector('button') || document.querySelector('button.agree-btn');
+        if (btn) btn.click();
+        else modal.remove();
+      }
+
       const swalContainer = document.querySelector('.swal2-container');
       if (!swalContainer) return null;
 
@@ -453,8 +460,8 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
     }
 
     // 2. Navigate to search page
-    const fromCity = process.env.FROM_STATION || 'Dhaka';
-    const toCity = process.env.TO_STATION || 'Kishorganj';
+    const fromCity = (process.env.FROM_STATION || 'Dhaka').trim();
+    const toCity = (process.env.TO_STATION || 'Chattogram').trim();
     const journeyDate = getComputedJourneyDate();
     const rawJourneyClass = process.env.JOURNEY_CLASS || 'SNIGDHA';
     const preferredClasses = rawJourneyClass
