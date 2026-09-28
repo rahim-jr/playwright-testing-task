@@ -515,13 +515,12 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
 
     // 3. Continuous Watchdog / Polling Loop (Seat Snipe Routine)
-    let selectedBookNowBtn = null;
-    let selectedTrainDescription = '';
+    let targetCandidates = [];
     let checkIteration = 0;
     const maxWatchMinutes = parseInt(process.env.WATCH_MINUTES || '30', 10);
     const watchStartTime = Date.now();
 
-    while (!selectedBookNowBtn) {
+    while (targetCandidates.length === 0) {
       checkIteration++;
 
       // Guard 1: Strict Search URL Sentinel
@@ -666,15 +665,18 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
           return b.seatCount - a.seatCount;
         });
 
-        const best = candidates[0];
-        selectedBookNowBtn = best.btn;
-        selectedTrainDescription = `${best.trainTitle} [${best.blockText}] (${best.seatCount > 0 ? best.seatCount + ' seats' : 'available'})`;
+        // Filter: prioritize classes matching user's preferredClasses order, keep all valid candidates for failover
+        const preferredOnly = candidates.filter(c => c.isPreferred);
+        targetCandidates = preferredOnly.length > 0 ? preferredOnly : candidates;
+
+        const best = targetCandidates[0];
+        const selectedTrainDescription = `${best.trainTitle} [${best.blockText}] (${best.seatCount > 0 ? best.seatCount + ' seats' : 'available'})`;
 
         if (checkIteration === 1) {
-          console.log(`\n⚡ Tickets immediately available! Target: ${selectedTrainDescription}`);
+          console.log(`\n⚡ Tickets immediately available! Primary target: ${selectedTrainDescription}`);
         } else {
           console.log(`\n🚨🚨 [TICKETS RELEASED / DROPPED!] 🚨🚨`);
-          console.log(`🎯 Target acquired: ${selectedTrainDescription}`);
+          console.log(`🎯 Primary target acquired: ${selectedTrainDescription}`);
           triggerAlertNotification('Tickets Released!', `Found available tickets on ${best.trainTitle}! Sniping 4 middle seats now...`);
         }
         break;
@@ -731,15 +733,23 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
       }
     }
 
-    if (!selectedBookNowBtn) {
+    if (!targetCandidates || targetCandidates.length === 0) {
       console.log('⚠️ Watchdog finished without finding tickets.');
       return;
     }
 
-    // 4. Click BOOK NOW immediately
-    await selectedBookNowBtn.waitFor({ state: 'visible', timeout: 8000 });
-    console.log(`🎫 Clicking "BOOK NOW" on ${selectedTrainDescription}...`);
-    await selectedBookNowBtn.click();
+    for (let cIdx = 0; cIdx < targetCandidates.length; cIdx++) {
+      const candidate = targetCandidates[cIdx];
+      const selectedTrainDescription = `${candidate.trainTitle} [${candidate.blockText}] (${candidate.seatCount > 0 ? candidate.seatCount + ' seats' : 'available'})`;
+
+      if (cIdx > 0) {
+        console.log(`\n🔄 [Class Failover #${cIdx + 1}/${targetCandidates.length}]: Switching to next preferred class: ${selectedTrainDescription}...`);
+      }
+
+      // 4. Click BOOK NOW immediately
+      await candidate.btn.waitFor({ state: 'visible', timeout: 8000 });
+      console.log(`🎫 Clicking "BOOK NOW" on ${selectedTrainDescription}...`);
+      await candidate.btn.click();
 
     // Fast-wait for either layout to open or login modal to appear (replaces 2500ms blind sleep)
     await Promise.race([
@@ -1024,6 +1034,34 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
         }
       }
     }
+
+    // Verify total seats locked in cart for this candidate class
+    const currentCartSeats = await getUniqueSelectedSeatNames(page);
+    if (currentCartSeats.length >= 4) {
+      console.log(`🎉 Successfully locked all ${currentCartSeats.length} requested tickets in [${candidate.blockText}]!`);
+      break; // Successfully got all tickets!
+    }
+
+    // If we couldn't secure 4 seats in this class, check if another candidate class is available
+    if (cIdx < targetCandidates.length - 1) {
+      const nextCandidate = targetCandidates[cIdx + 1];
+      console.log(`\n⚠️ Unable to complete booking in "${candidate.blockText}" (${currentCartSeats.length}/4 seats secured, all coaches booked or full).`);
+      console.log(`🔄 Auto-failing over to next preferred class: "${nextCandidate.blockText}"...`);
+
+      // If partial seats were selected in this class, clear them because Bangladesh Railway
+      // does not allow mixing classes in a single PNR purchase
+      if (currentCartSeats.length > 0) {
+        console.log(`🧹 Clearing ${currentCartSeats.length} partial seat(s) from "${candidate.blockText}" to book fresh set in "${nextCandidate.blockText}"...`);
+        const selectedSeatBtns = page.locator('button.btn-seat.seat-selected, button.btn-seat[class*="selected"]');
+        let sCount = await selectedSeatBtns.count().catch(() => 0);
+        for (let i = 0; i < sCount; i++) {
+          await selectedSeatBtns.first().click().catch(() => {});
+          await page.waitForTimeout(300);
+        }
+        await page.waitForTimeout(500);
+      }
+    }
+  }
 
     // 8. Verify total selected seats and Continue button safely
     await page.waitForTimeout(500);
