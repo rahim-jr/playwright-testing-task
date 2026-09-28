@@ -211,6 +211,31 @@ async function getUniqueSelectedSeatsCount(page) {
 }
 
 /**
+ * Automatically unselects/deselects all currently selected seats from cart
+ */
+async function unselectCurrentSeats(page) {
+  try {
+    let maxTries = 15;
+    while (maxTries > 0) {
+      maxTries--;
+      const selectedBtn = page.locator('button.btn-seat.seat-selected, button.btn-seat[class*="selected"]').first();
+      const isVis = await selectedBtn.isVisible().catch(() => false);
+      if (!isVis) break;
+
+      const title = (await selectedBtn.getAttribute('title').catch(() => '')) || (await selectedBtn.innerText().catch(() => ''));
+      console.log(`   👉 Unselecting seat: ${title.trim() || 'Selected Seat'}`);
+      await selectedBtn.click({ timeout: 2000 }).catch(() => {});
+      await page.waitForTimeout(300);
+      await dismissSweetAlertSafely(page);
+    }
+  } catch (err) {
+    if (!err.message || !err.message.includes('closed')) {
+      console.error('Error during seat unselect:', err.message);
+    }
+  }
+}
+
+/**
  * Checks if the page is displaying a Cloudflare or Shohoz server error / high traffic screen
  */
 async function isServerErrorOrBusy(page) {
@@ -447,11 +472,17 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
   let context;
   let page;
   try {
-    const shouldClear = process.argv.includes('--clear') || process.env.CLEAR_PREVIOUS === 'true';
+    const shouldAutoUnselect = process.argv.includes('--clear') ||
+      process.env.npm_config_clear === 'true' ||
+      process.env.CLEAR_AFTER === 'true' ||
+      process.argv.includes('--unselect');
     const singleCheckOnly = process.argv.includes('--once');
 
     console.log(`🚀 Starting Bangladesh Railway Automated Seat Booking (Instant Book & Auto-Watchdog)...`);
     console.log(`ℹ️ Workflow: Books immediately if seats are free, or continuously monitors until tickets release.`);
+    if (shouldAutoUnselect) {
+      console.log('🧹 Mode: Auto-Unselect enabled (--clear). Tickets will be selected for verification, then automatically released.');
+    }
     console.log(`🛡️ Auto-Relogin: Enabled. If the site unexpectedly logs you out, the script will automatically re-authenticate and resume.`);
 
     const isHeadless = process.env.HEADLESS === 'true';
@@ -789,48 +820,6 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
     let alreadySelected = await getUniqueSelectedSeatNames(page);
     console.log(`🛒 Currently selected seats in cart (${alreadySelected.length}):`, alreadySelected);
 
-    if (shouldClear && alreadySelected.length > 0) {
-      console.log(`🧹 Clearing ${alreadySelected.length} previously selected seat(s) from cart: [${alreadySelected.join(', ')}]...`);
-      // 1. Click any seat-selected buttons in the current layout
-      const selectedSeatBtns = page.locator('button.btn-seat.seat-selected, button.btn-seat[class*="selected"]');
-      let sCount = await selectedSeatBtns.count();
-      for (let i = 0; i < sCount; i++) {
-        try {
-          await selectedSeatBtns.first().click().catch(() => {});
-          await page.waitForTimeout(400);
-        } catch {}
-      }
-
-      // 2. If seats from other coaches are in cart, switch to those coaches to deselect
-      const bogieSelect = page.locator('#select-bogie, select.selectpicker, .bogie-selection select').first();
-      if (await bogieSelect.isVisible().catch(() => false)) {
-        const remainingTableSeats = await page.$$eval('#tbl_price_details tbody tr td:nth-child(2)', els => els.map(e => e.innerText.trim()).filter(Boolean)).catch(() => []);
-        for (const seatName of remainingTableSeats) {
-          const coachPrefix = seatName.split('-')[0];
-          const options = await bogieSelect.locator('option').all();
-          for (const opt of options) {
-            const optText = await opt.innerText();
-            const optVal = await opt.getAttribute('value');
-            if (new RegExp(`^${coachPrefix}\\b`, 'i').test(optText) && optVal !== null) {
-              await bogieSelect.selectOption(optVal).catch(() => {});
-              await page.waitForTimeout(1000);
-              const coachSelectedBtns = page.locator('button.btn-seat.seat-selected, button.btn-seat[class*="selected"]');
-              const cCount = await coachSelectedBtns.count();
-              for (let k = 0; k < cCount; k++) {
-                await coachSelectedBtns.first().click().catch(() => {});
-                await page.waitForTimeout(400);
-              }
-              break;
-            }
-          }
-        }
-      }
-      await page.waitForTimeout(1000);
-
-      alreadySelected = await getUniqueSelectedSeatNames(page);
-      console.log(`🛒 Seats in cart after clearing: ${alreadySelected.length}`);
-    }
-
     let remainingNeeded = Math.max(0, requestedSeatCount - alreadySelected.length);
 
     if (remainingNeeded === 0) {
@@ -1106,6 +1095,21 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
       }
 
       console.log('\n🖥️ Seat selection completed successfully!');
+
+      if (shouldAutoUnselect) {
+        console.log('\n⏳ Holding selected seats for 6 seconds for your visual verification...');
+        await page.waitForTimeout(6000);
+
+        console.log(`🧹 [--clear]: Automatically unselecting ${finalSelected.length} seat(s) from cart...`);
+        await unselectCurrentSeats(page);
+
+        await page.waitForTimeout(1000);
+        const remainingAfter = await getUniqueSelectedSeatsCount(page);
+        console.log(`✅ Unselect complete! Remaining seats in cart: ${remainingAfter}`);
+        console.log('✨ Test finished cleanly. Auto-closing browser...');
+        await context.close().catch(() => {});
+        return;
+      }
     }
 
     // Keep browser open until manually closed by user
