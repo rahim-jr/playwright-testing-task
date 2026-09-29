@@ -82,8 +82,17 @@ async function isSessionActive(page) {
  */
 async function performFreshLogin(page) {
   console.log('🔑 Performing login with credentials from .env...');
-  await page.goto('https://eticket.railway.gov.bd/login', { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(1500);
+  // Avoid a redundant full reload if we are already on the login page.
+  if (!page.url().includes('/login')) {
+    await page.goto('https://eticket.railway.gov.bd/login', { waitUntil: 'domcontentloaded' });
+  }
+  await page.waitForSelector('#mobile_number', { timeout: 10000 }).catch(() => {});
+
+  // If the portal redirected us away from /login, a valid session already exists.
+  if (!page.url().includes('/login')) {
+    console.log('✅ Already authenticated (login page redirected away).');
+    return;
+  }
 
   // Dismiss disclaimer modal if present
   await page.evaluate(() => {
@@ -97,10 +106,8 @@ async function performFreshLogin(page) {
     if (agreeBtn) agreeBtn.click();
   });
 
-  await page.click('#mobile_number');
-  await page.keyboard.type(process.env.RAILWAY_MOBILE_NUMBER || '');
-  await page.click('#password');
-  await page.keyboard.type(process.env.RAILWAY_PASSWORD || '');
+  await page.locator('#mobile_number').fill(process.env.RAILWAY_MOBILE_NUMBER || '');
+  await page.locator('#password').fill(process.env.RAILWAY_PASSWORD || '');
 
   console.log('⏳ Waiting for Turnstile verification and Login button to activate...');
   await page.waitForSelector('button.login-form-submit-btn:not([disabled])', { timeout: 20000 });
@@ -109,7 +116,23 @@ async function performFreshLogin(page) {
 
   await page.waitForURL(url => !url.pathname.includes('/login'), { timeout: 15000 });
   console.log('🎉 Login successful! Active session established.');
-  await page.waitForTimeout(1500);
+}
+
+/**
+ * Authenticates through the in-page login modal (no full page navigation).
+ * Used when the portal prompts for login while already on the search page.
+ */
+async function loginViaModal(page) {
+  console.log('🔑 Login modal detected. Authenticating inline (no page reload)...');
+  await page.locator('#train-app-login-form #mobile_number, #mobile_number').first()
+    .fill(process.env.RAILWAY_MOBILE_NUMBER || '').catch(() => {});
+  await page.locator('#trainAppLoginPassword, #password').first()
+    .fill(process.env.RAILWAY_PASSWORD || '').catch(() => {});
+
+  const submitBtn = page.locator('#train-app-login-form button[type="submit"], button.login-form-submit-btn').first();
+  await submitBtn.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+  await submitBtn.click({ timeout: 5000 }).catch(() => {});
+  await page.waitForSelector('.single-trip-wrapper, .seat-layout-container, #select-bogie, button.btn-seat', { timeout: 8000 }).catch(() => {});
 }
 
 /**
@@ -232,18 +255,6 @@ async function unselectCurrentSeats(page) {
     if (!err.message || !err.message.includes('closed')) {
       console.error('Error during seat unselect:', err.message);
     }
-  }
-}
-
-/**
- * Checks if the page is displaying a Cloudflare or Shohoz server error / high traffic screen
- */
-async function isServerErrorOrBusy(page) {
-  try {
-    const pageText = await page.evaluate(() => document.body ? document.body.innerText : '');
-    return /503 service|502 bad gateway|server is busy|experiencing high traffic|too many requests|rate limit/i.test(pageText);
-  } catch {
-    return false;
   }
 }
 
@@ -468,9 +479,210 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
   });
 }
 
+/**
+ * High-Speed Batch Seat Selector.
+ * Clicks AND verifies every target seat inside a SINGLE browser round-trip.
+ *
+ * The previous per-seat implementation issued ~8 Playwright protocol round-trips
+ * per seat (isVisible -> click -> sleep -> swal check -> 4x class poll -> cart scan).
+ * Under 8:00 AM concurrency each round-trip can take 50-200ms, so 4 seats could
+ * cost several seconds. This collapses the whole batch into one evaluate call.
+ */
+async function selectSeatsFast(page, targets) {
+  return await page.evaluate(async (targetList) => {
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    const neutralize = () => {
+      const swal = document.querySelector('.swal2-container');
+      if (swal) {
+        swal.remove();
+        document.body.classList.remove('swal2-shown', 'swal2-height-auto');
+      }
+      const disclaimer = document.querySelector('app-disclaimer-modal');
+      if (disclaimer) {
+        const btn = disclaimer.querySelector('button');
+        if (btn) btn.click();
+        else disclaimer.remove();
+      }
+    };
+
+    const cartTitles = () => {
+      const names = new Set();
+      document.querySelectorAll('button.btn-seat.seat-selected, button.btn-seat[class*="selected"]').forEach((el) => {
+        const name = (el.getAttribute('title') || el.innerText || '').trim();
+        if (name) names.add(name);
+      });
+      document.querySelectorAll('#tbl_price_details tbody tr td:nth-child(2)').forEach((td) => {
+        const name = (td.innerText || '').trim();
+        if (name) names.add(name);
+      });
+      document.querySelectorAll('.selected-seats-list .single-selected-seat-btn').forEach((badge) => {
+        const name = (badge.innerText || '').trim();
+        if (name) names.add(name);
+      });
+      return names;
+    };
+
+    const selectedTitles = [];
+    const failedTitles = [];
+
+    for (const target of targetList) {
+      neutralize();
+
+      let el = document.querySelectorAll('button.btn-seat')[target.domIndex];
+      if (!el) {
+        failedTitles.push(target.title);
+        continue;
+      }
+
+      if (el.classList.contains('seat-selected') || el.classList.contains('selected')) {
+        selectedTitles.push(target.title);
+        continue;
+      }
+
+      // Synthetic native click -> Angular (click) binding fires without Playwright
+      // actionability checks / hit-testing round-trips.
+      el.click();
+
+      let isSelected = false;
+      for (let w = 0; w < 10; w++) {
+        await sleep(30);
+        neutralize();
+        const check = document.querySelectorAll('button.btn-seat')[target.domIndex];
+        if (check && (check.classList.contains('seat-selected') || check.classList.contains('selected'))) {
+          isSelected = true;
+          break;
+        }
+      }
+
+      if (isSelected) {
+        selectedTitles.push(target.title);
+      } else {
+        const check = document.querySelectorAll('button.btn-seat')[target.domIndex];
+        if (check) {
+          check.classList.add('seat-booked');
+          check.disabled = true;
+        }
+        failedTitles.push(target.title);
+      }
+    }
+
+    const cart = Array.from(cartTitles());
+    return { selectedTitles, failedTitles, cart, cartSize: cart.length };
+  }, targets);
+}
+
+/**
+ * Single-round-trip watchdog scanner.
+ * Reads session state, detects server-busy screens, neutralizes popups and
+ * parses EVERY train + class BOOK NOW button in ONE page.evaluate.
+ *
+ * The previous implementation issued 3-4 Playwright round-trips per class block
+ * (isVisible -> getAttribute -> innerText) on every 1s poll. This collapses the
+ * entire scan into a single protocol call, so the watchdog reacts much sooner.
+ */
+async function scanSearchPage(page, targetTrainNumber) {
+  return await page.evaluate((trainFilter) => {
+    const out = {
+      candidates: [],
+      alertMsg: '',
+      serverBusy: false,
+      hasToken: false,
+      isLoginPage: false,
+      hasLoginBtn: false,
+      hasLoginModal: false,
+      tripCount: 0,
+    };
+
+    try {
+      out.hasToken = !!(localStorage.getItem('token') || sessionStorage.getItem('token'));
+    } catch {}
+    out.isLoginPage = window.location.pathname.includes('/login');
+
+    const loginEl = Array.from(document.querySelectorAll('a, button')).find((el) =>
+      /^\s*LOGIN\s*$/i.test((el.innerText || '').trim()) || el.classList.contains('login-btn')
+    );
+    if (loginEl) {
+      const cs = window.getComputedStyle(loginEl);
+      out.hasLoginBtn = cs.display !== 'none' && cs.visibility !== 'hidden';
+    }
+
+    const loginModal = document.querySelector('.login-modal-container, #train-app-login-form');
+    if (loginModal) {
+      const cs = window.getComputedStyle(loginModal);
+      out.hasLoginModal = cs.display !== 'none' && cs.visibility !== 'hidden';
+    }
+
+    const disclaimer = document.querySelector('app-disclaimer-modal');
+    if (disclaimer) {
+      const btn = disclaimer.querySelector('button') || document.querySelector('button.agree-btn');
+      if (btn) btn.click();
+      else disclaimer.remove();
+    }
+
+    const swal = document.querySelector('.swal2-container');
+    if (swal) {
+      const titleEl = swal.querySelector('.swal2-title');
+      const htmlEl = swal.querySelector('.swal2-html-container');
+      out.alertMsg = [titleEl ? titleEl.innerText : '', htmlEl ? htmlEl.innerText : '']
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .join(' - ') || 'Modal dismissed';
+      swal.remove();
+      document.body.classList.remove('swal2-shown', 'swal2-height-auto');
+    }
+
+    const bodyText = document.body ? document.body.innerText : '';
+    out.serverBusy = /503 service|502 bad gateway|server is busy|experiencing high traffic|too many requests|rate limit/i.test(bodyText);
+
+    const wrappers = document.querySelectorAll('.single-trip-wrapper');
+    out.tripCount = wrappers.length;
+    wrappers.forEach((trip, i) => {
+      const titleEl = trip.querySelector('.trip-name, .train-name, h2, h3');
+      const trainTitle = titleEl ? (titleEl.innerText || '').trim() : '';
+      const tripFullText = (trip.innerText || '').replace(/\s+/g, ' ');
+
+      if (trainFilter && !(trainTitle.includes(trainFilter) || tripFullText.includes(trainFilter))) return;
+
+      trip.querySelectorAll('.single-seat-class').forEach((block, j) => {
+        const btn = block.querySelector('button.book-now-btn') ||
+          Array.from(block.querySelectorAll('button')).find((b) => /BOOK NOW/i.test(b.innerText || ''));
+        if (!btn) return;
+        if (btn.disabled || btn.hasAttribute('disabled')) return;
+        const cs = window.getComputedStyle(btn);
+        if (cs.display === 'none' || cs.visibility === 'hidden') return;
+
+        const blockText = (block.innerText || '').replace(/\s+/g, ' ');
+        out.candidates.push({
+          tripIndex: i,
+          classIndex: j,
+          trainTitle: trainTitle || `Train #${i + 1}`,
+          blockText: blockText.slice(0, 35),
+          blockFull: blockText,
+          upperBlock: blockText.toUpperCase(),
+        });
+      });
+    });
+
+    return out;
+  }, targetTrainNumber);
+}
+
+/**
+ * Rebuilds the BOOK NOW locator for a scanned candidate by index.
+ */
+function bookNowLocator(page, candidate) {
+  return page
+    .locator('.single-trip-wrapper').nth(candidate.tripIndex)
+    .locator('.single-seat-class').nth(candidate.classIndex)
+    .locator('button.book-now-btn, button:has-text("BOOK NOW")').first();
+}
+
 (async () => {
   let context;
   let page;
+  const SCRIPT_START = Date.now();
+  const elapsed = () => `${((Date.now() - SCRIPT_START) / 1000).toFixed(1)}s`;
   try {
     const shouldAutoUnselect = process.argv.includes('--clear') ||
       process.env.npm_config_clear === 'true' ||
@@ -488,9 +700,16 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
     const isHeadless = process.env.HEADLESS === 'true';
     context = await launchPersistentContext('/tmp/railway-chrome-user-data', {
       headless: isHeadless,
-      slowMo: isHeadless ? 0 : 50,
+      slowMo: 0,
       viewport: { width: 1366, height: 768 },
-      args: ['--no-sandbox', '--disable-blink-features=AutomationControlled']
+      args: [
+        '--no-sandbox',
+        '--disable-blink-features=AutomationControlled',
+        // Keep timers/rendering at full speed even when the window is not focused.
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+      ]
     });
 
     process.once('SIGINT', async () => {
@@ -505,30 +724,7 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
       console.log('ℹ️ Browser tab was closed.');
     });
 
-    // 1. Session Warm-up & Pre-Login
-    await page.goto('https://eticket.railway.gov.bd/login', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(1500);
-
-    // Dismiss disclaimer modal if present
-    await page.evaluate(() => {
-      const modal = document.querySelector('app-disclaimer-modal');
-      if (modal) {
-        const btn = modal.querySelector('button');
-        if (btn) btn.click();
-        else modal.remove();
-      }
-      const agreeBtn = document.querySelector('button.agree-btn');
-      if (agreeBtn) agreeBtn.click();
-    });
-
-    const activeSession = await isSessionActive(page);
-    if (!activeSession) {
-      await performFreshLogin(page);
-    } else {
-      console.log('✅ Authenticated session active and ready.');
-    }
-
-    // 2. Navigate to search page
+    // 1. Route parameters
     const fromCity = (process.env.FROM_STATION || 'Dhaka').trim();
     const toCity = (process.env.TO_STATION || 'Chattogram').trim();
     const journeyDate = getComputedJourneyDate();
@@ -543,12 +739,47 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
 
     const searchUrl = `https://eticket.railway.gov.bd/booking/train/search?fromcity=${encodeURIComponent(fromCity)}&tocity=${encodeURIComponent(toCity)}&doj=${encodeURIComponent(journeyDate)}&class=${encodeURIComponent(primaryClass)}`;
 
+    // 2. Go STRAIGHT to the search deep-link.
+    // When the persistent profile already holds a valid session this is a SINGLE
+    // app load. Previously the script loaded /login (redirected to /) and only
+    // then loaded the search page, doubling the slow Angular app boot.
     console.log(`🚂 Navigating to route: ${fromCity} -> ${toCity} on ${journeyDate} (Classes: ${preferredClasses.join(' > ')}${targetTrainNumber ? ', Train: #' + targetTrainNumber : ''}, Requested Seats: ${requestedSeatCount})...`);
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await page.waitForSelector('#mobile_number, button.agree-btn, app-disclaimer-modal, .single-trip-wrapper, .login-modal-container', { timeout: 10000 }).catch(() => {});
+
+    // Dismiss disclaimer modal if present
+    await page.evaluate(() => {
+      const modal = document.querySelector('app-disclaimer-modal');
+      if (modal) {
+        const btn = modal.querySelector('button');
+        if (btn) btn.click();
+        else modal.remove();
+      }
+      const agreeBtn = document.querySelector('button.agree-btn');
+      if (agreeBtn) agreeBtn.click();
+    });
+
+    // Verify session. Prefer the in-page modal (no reload); otherwise, if the
+    // portal bounced us to /login, authenticate once and return to the search.
+    const loginModalVisible = await page.locator('.login-modal-container, #train-app-login-form').first().isVisible().catch(() => false);
+    const activeSession = await isSessionActive(page);
+
+    if (loginModalVisible) {
+      await loginViaModal(page);
+      console.log(`✅ Login complete at ${elapsed()}.`);
+    } else if (!activeSession || page.url().includes('/login')) {
+      await performFreshLogin(page);
+      console.log(`✅ Login complete at ${elapsed()}.`);
+      await page.goto(searchUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    } else {
+      console.log(`✅ Authenticated session active and ready (${elapsed()}).`);
+    }
+    console.log(`🔎 Search page ready at ${elapsed()}. Scanning for trains...`);
 
     // 3. Continuous Watchdog / Polling Loop (Seat Snipe Routine)
     let targetCandidates = [];
     let checkIteration = 0;
+    let inlineLoginAttempts = 0;
     const maxWatchMinutes = parseInt(process.env.WATCH_MINUTES || '30', 10);
     const watchStartTime = Date.now();
 
@@ -561,128 +792,129 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
       if (!currentUrl.includes('/booking/train/search')) {
         console.log(`⚠️ Detected redirect away from search page (Current: ${currentUrl}). Re-navigating to search URL...`);
         await page.goto(searchUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
-        await page.waitForTimeout(600);
+        await page.waitForTimeout(200);
       }
 
-      // Guard 2: Session Sentinel: If site unexpectedly logged user out mid-refresh, auto-login and resume
-      const currentlyAuthed = await isSessionActive(page);
-      if (!currentlyAuthed) {
-        console.log('\n⚠️ Bangladesh Railway unexpectedly logged you out mid-refresh!');
-        console.log('🔄 Auto-logging back in to resume testing immediately...');
-        await performFreshLogin(page);
-        console.log('✅ Session restored! Resuming search and watchdog monitoring...');
-        await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(1000);
+      // Single-round-trip scan: session state + popups + server-busy + all
+      // train/class BOOK NOW candidates, all parsed in ONE page.evaluate.
+      let scan;
+      try {
+        scan = await scanSearchPage(page, targetTrainNumber);
+      } catch {
+        await page.goto(searchUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+        continue;
       }
 
-      // Guard 3: SweetAlert Neutralizer
-      // Safely remove any "Tickets not released yet" or "Online booking starts at 08:00 AM" popups
-      // WITHOUT clicking OKAY (which triggers Angular SPA redirect to '/')
-      const alertMsg = await dismissSweetAlertSafely(page);
-      if (alertMsg) {
-        console.log(`ℹ️ [8:00 AM Server Notice]: "${alertMsg}"`);
+      // Guard 3: SweetAlert Neutralizer notice
+      if (scan.alertMsg) {
+        console.log(`ℹ️ [8:00 AM Server Notice]: "${scan.alertMsg}"`);
       }
 
       // Guard 4: Server 503 / 502 / High Traffic Recovery
-      if (await isServerErrorOrBusy(page)) {
+      if (scan.serverBusy) {
         console.log(`⚠️ [8:00 AM Traffic Spike]: Server busy or 503 returned. Retrying connection in 1s...`);
         await page.waitForTimeout(1000);
         await page.goto(searchUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
         continue;
       }
 
-      // Fast non-blocking check for trains (timeout 1200ms instead of 4000ms x 3 = 12000ms lag)
-      try {
-        await page.waitForSelector('.single-trip-wrapper', { timeout: 1200 });
-      } catch {
-        // If trains didn't load in 1200ms, dismiss any popup that appeared
-        const lateAlert = await dismissSweetAlertSafely(page);
-        if (lateAlert) {
-          console.log(`ℹ️ [8:00 AM Server Notice]: "${lateAlert}"`);
+      // Guard 2a: In-page login modal (session expired without a URL redirect).
+      // Authenticate inline to avoid a slow full page reload; fall back to the
+      // full login page if the modal does not complete (e.g. Turnstile blocks).
+      if (scan.hasLoginModal) {
+        if (inlineLoginAttempts < 2) {
+          inlineLoginAttempts++;
+          await loginViaModal(page);
+        } else {
+          console.log('⚠️ Inline login not completing. Falling back to full login page...');
+          await performFreshLogin(page);
+          await page.goto(searchUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+          inlineLoginAttempts = 0;
         }
+        continue;
       }
 
-      // Scan all trains & classes for active "BOOK NOW" buttons
-      const tripWrappers = page.locator('.single-trip-wrapper');
-      const tripCount = await tripWrappers.count();
-      const candidates = [];
+      // Guard 2: Session Sentinel: If site unexpectedly logged user out mid-refresh, auto-login and resume
+      const currentlyAuthed = scan.hasToken && !scan.isLoginPage && !scan.hasLoginBtn;
+      if (!currentlyAuthed) {
+        console.log('\n⚠️ Bangladesh Railway unexpectedly logged you out mid-refresh!');
+        console.log('🔄 Auto-logging back in to resume testing immediately...');
+        await performFreshLogin(page);
+        console.log('✅ Session restored! Resuming search and watchdog monitoring...');
+        await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
+        continue;
+      }
 
-      if (tripCount > 0) {
-        for (let i = 0; i < tripCount; i++) {
-          const trip = tripWrappers.nth(i);
-          const trainTitle = (await trip.locator('.trip-name, .train-name, h2, h3').first().innerText().catch(() => '')).trim();
-          const tripFullText = (await trip.innerText().catch(() => '')).replace(/\s+/g, ' ');
-
-          // If a specific train number is requested, strictly target that train
-          if (targetTrainNumber) {
-            const matchesTrain = trainTitle.includes(targetTrainNumber) || tripFullText.includes(targetTrainNumber);
-            if (!matchesTrain) continue;
-          }
-
-          const classBlocks = trip.locator('.single-seat-class');
-          const cCount = await classBlocks.count();
-
-          for (let j = 0; j < cCount; j++) {
-            const block = classBlocks.nth(j);
-            const btn = block.locator('button.book-now-btn, button:has-text("BOOK NOW")').first();
-            if (!(await btn.isVisible().catch(() => false))) continue;
-
-            const isDisabled = await btn.getAttribute('disabled');
-            if (isDisabled !== null) continue;
-
-            const blockText = (await block.innerText().catch(() => '')).replace(/\s+/g, ' ');
-            const upperBlock = blockText.toUpperCase();
-
-            // Parse seat count if present, e.g. "Online: 70", "Available Tickets (Counter + Online) 141", "Available Tickets (141)"
-            let seatCount = 1;
-            const onlineMatch = blockText.match(/online\s*[:\-]?\s*(\d+)/i);
-            const totalAvailMatch = blockText.match(/available\s*tickets?\s*(?:\([^)]*\))?\s*(\d+)/i);
-            const availTicketsMatch = blockText.match(/available\s*tickets?\s*\(?(?:[^0-9]*counter\s*[:\-]?\s*\d+\s*,\s*)?(?:online\s*[:\-]?\s*)?(\d+)/i);
-            if (onlineMatch) {
-              seatCount = parseInt(onlineMatch[1], 10);
-            } else if (totalAvailMatch) {
-              seatCount = parseInt(totalAvailMatch[1], 10);
-            } else if (availTicketsMatch) {
-              seatCount = parseInt(availTicketsMatch[1], 10);
-            }
-
-            // If online tickets are explicitly 0, skip this sold-out class
-            if (onlineMatch && seatCount === 0) continue;
-            if (upperBlock.includes('ONLINE: 0') || upperBlock.includes('ONLINE:0') || upperBlock.includes('AVAILABLE TICKETS (COUNTER: 0, ONLINE: 0)')) {
-              continue;
-            }
-
-            const preferredRank = preferredClasses.findIndex(cls => {
-              const normCls = cls.toUpperCase();
-              if (upperBlock.includes(normCls)) return true;
-              if (normCls === 'S_CHAIR') {
-                return upperBlock.includes('S CHAIR') || upperBlock.includes('S-CHAIR') || upperBlock.includes('SHOVAN CHAIR') || upperBlock.includes('SHOVON CHAIR');
-              }
-              if (normCls === 'F_SEAT') {
-                return upperBlock.includes('F SEAT') || upperBlock.includes('F-SEAT') || upperBlock.includes('FIRST SEAT');
-              }
-              return false;
-            });
-            const isPreferred = preferredRank !== -1;
-
-            console.log(`   🔎 Evaluated class: "${blockText.slice(0, 25)}" | seats: ${seatCount} | rank: ${preferredRank} | preferred: ${isPreferred}`);
-
-            candidates.push({
-              btn,
-              trainTitle: trainTitle || `Train #${i + 1}`,
-              blockText: blockText.slice(0, 35),
-              seatCount,
-              isPreferred,
-              preferredRank: isPreferred ? preferredRank : 999
-            });
-          }
+      // If the results list itself hasn't rendered yet (SPA re-query lag), wait
+      // briefly and re-scan ONCE. Skipped when trains rendered but are sold out.
+      if (scan.candidates.length === 0 && !scan.serverBusy && scan.alertMsg === '' && scan.tripCount === 0) {
+        try {
+          await page.waitForSelector('.single-trip-wrapper', { timeout: 1200 });
+        } catch {
+          const lateAlert = await dismissSweetAlertSafely(page);
+          if (lateAlert) console.log(`ℹ️ [8:00 AM Server Notice]: "${lateAlert}"`);
         }
+        try {
+          scan = await scanSearchPage(page, targetTrainNumber);
+        } catch {}
+      }
+
+      // Build candidates from the scan result (seat-count parsing + class ranking in Node)
+      const candidates = [];
+      for (const c of scan.candidates) {
+        const blockText = c.blockFull;
+        const upperBlock = c.upperBlock;
+
+        // Parse seat count if present, e.g. "Online: 70", "Available Tickets (Counter + Online) 141", "Available Tickets (141)"
+        let seatCount = 1;
+        const onlineMatch = blockText.match(/online\s*[:\-]?\s*(\d+)/i);
+        const totalAvailMatch = blockText.match(/available\s*tickets?\s*(?:\([^)]*\))?\s*(\d+)/i);
+        const availTicketsMatch = blockText.match(/available\s*tickets?\s*\(?(?:[^0-9]*counter\s*[:\-]?\s*\d+\s*,\s*)?(?:online\s*[:\-]?\s*)?(\d+)/i);
+        if (onlineMatch) {
+          seatCount = parseInt(onlineMatch[1], 10);
+        } else if (totalAvailMatch) {
+          seatCount = parseInt(totalAvailMatch[1], 10);
+        } else if (availTicketsMatch) {
+          seatCount = parseInt(availTicketsMatch[1], 10);
+        }
+
+        // If online tickets are explicitly 0, skip this sold-out class
+        if (onlineMatch && seatCount === 0) continue;
+        if (upperBlock.includes('ONLINE: 0') || upperBlock.includes('ONLINE:0') || upperBlock.includes('AVAILABLE TICKETS (COUNTER: 0, ONLINE: 0)')) {
+          continue;
+        }
+
+        const preferredRank = preferredClasses.findIndex(cls => {
+          const normCls = cls.toUpperCase();
+          if (upperBlock.includes(normCls)) return true;
+          if (normCls === 'S_CHAIR') {
+            return upperBlock.includes('S CHAIR') || upperBlock.includes('S-CHAIR') || upperBlock.includes('SHOVAN CHAIR') || upperBlock.includes('SHOVON CHAIR');
+          }
+          if (normCls === 'F_SEAT') {
+            return upperBlock.includes('F SEAT') || upperBlock.includes('F-SEAT') || upperBlock.includes('FIRST SEAT');
+          }
+          return false;
+        });
+        const isPreferred = preferredRank !== -1;
+
+        console.log(`   🔎 Evaluated class: "${blockText.slice(0, 25)}" | seats: ${seatCount} | rank: ${preferredRank} | preferred: ${isPreferred}`);
+
+        candidates.push({
+          tripIndex: c.tripIndex,
+          classIndex: c.classIndex,
+          trainTitle: c.trainTitle,
+          blockText: c.blockText,
+          seatCount,
+          isPreferred,
+          preferredRank: isPreferred ? preferredRank : 999
+        });
       }
 
       console.log('📋 All parsed candidates:', candidates.map(c => ({ class: c.blockText.slice(0, 15), seats: c.seatCount, rank: c.preferredRank })));
 
       // Check if any candidates with available seats are ready
       if (candidates.length > 0) {
+        console.log(`🎯 ${candidates.length} bookable class(es) found at ${elapsed()}. Ranking...`);
         candidates.sort((a, b) => {
           // Prioritize classes that actually have seats available (> 0)
           const aHas = a.seatCount > 0;
@@ -740,19 +972,21 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
       }
       const targetLabel = targetTrainNumber ? `Train #${targetTrainNumber}` : `route`;
       console.log(`[${nowStr}] 🔍 Monitoring ${targetLabel} (Check #${checkIteration}). Next refresh in ${(refreshMs / 1000).toFixed(1)}s...`);
-      await page.waitForTimeout(refreshMs);
 
-      // Re-query search results (Dual Strategy: Fast SPA Re-query + Periodic Direct Navigation)
+      // Re-query FIRST so a fresh search is triggered immediately on the first
+      // pass (instead of after a full polling delay), then wait for results.
       try {
         const modSearchBtn = page.locator('button.modify_search, button:has-text("MODIFY SEARCH")').first();
         const hasModBtn = await modSearchBtn.isVisible().catch(() => false);
 
-        // Every 6 cycles, or if modify_search button is missing, do direct page navigation to bust stale server/browser cache
-        if (checkIteration % 6 === 0 || !hasModBtn) {
+        // Prefer the fast in-SPA re-query (no app reload). Only fall back to a
+        // full navigation if the MODIFY SEARCH control is missing, or rarely
+        // (every 30 cycles) to bust a stale cache.
+        if (!hasModBtn || checkIteration % 30 === 0) {
           await page.goto(searchUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
         } else {
           await modSearchBtn.click().catch(() => {});
-          await page.waitForTimeout(200);
+          await page.waitForTimeout(150);
           const searchTrainsBtn = page.locator('button:has-text("Search Trains"), .search-box-btn').first();
           if (await searchTrainsBtn.isVisible().catch(() => false)) {
             await searchTrainsBtn.click().catch(() => {});
@@ -763,6 +997,8 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
       } catch {
         await page.goto(searchUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
       }
+
+      await page.waitForTimeout(refreshMs);
     }
 
     if (!targetCandidates || targetCandidates.length === 0) {
@@ -778,10 +1014,9 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
         console.log(`\n🔄 [Class Failover #${cIdx + 1}/${targetCandidates.length}]: Switching to next preferred class: ${selectedTrainDescription}...`);
       }
 
-      // 4. Click BOOK NOW immediately
-      await candidate.btn.waitFor({ state: 'visible', timeout: 8000 });
-      console.log(`🎫 Clicking "BOOK NOW" on ${selectedTrainDescription}...`);
-      await candidate.btn.click();
+      // 4. Click BOOK NOW immediately (visibility already confirmed by the scanner)
+      console.log(`🎫 [${elapsed()}] Clicking "BOOK NOW" on ${selectedTrainDescription}...`);
+      await bookNowLocator(page, candidate).click({ timeout: 5000 });
 
     // Fast-wait for either layout to open or login modal to appear (replaces 2500ms blind sleep)
     await Promise.race([
@@ -812,9 +1047,10 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
     }
 
     // 5. Wait for the seat layout and coach container to fully expand (fast settling)
-    console.log('⏳ Awaiting seat layout and coaches to load...');
+    console.log(`⏳ [${elapsed()}] Awaiting seat layout and coaches to load...`);
     await page.waitForSelector('.seat-layout-container, .all-coach, #select-bogie, button.seat-floor-btn, button.btn-seat', { timeout: 10000 }).catch(() => {});
     await page.waitForTimeout(200);
+    console.log(`🪑 [${elapsed()}] Seat layout ready. Selecting coaches/seats...`);
 
     // Check currently selected seats in cart
     let alreadySelected = await getUniqueSelectedSeatNames(page);
@@ -903,14 +1139,21 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
         console.log(`\n🎯 Selecting from Coach "${coach.name}" (Available: ${coach.availableCount}, Needed: ${remainingNeeded})...`);
 
         if (coach.type === 'dropdown') {
-          await bogieSelect.selectOption(coach.val).catch(() => {});
-          await page.waitForSelector('button.btn-seat:not([disabled])', { timeout: 2000 }).catch(() => {});
-          await page.waitForTimeout(200);
+          // Only switch if the requested coach is not already the active one.
+          // A redundant selectOption + wait costs a full server round-trip under load.
+          const currentVal = await bogieSelect.inputValue().catch(() => null);
+          if (currentVal === coach.val) {
+            console.log(`   ⚡ Coach "${coach.name}" is already active. Skipping redundant switch.`);
+          } else {
+            await bogieSelect.selectOption(coach.val).catch(() => {});
+            await page.waitForSelector('button.btn-seat:not([disabled])', { timeout: 2000 }).catch(() => {});
+            await page.waitForTimeout(120);
+          }
         } else if (coach.type === 'button') {
           const coachButtons = page.locator('button.seat-floor-btn, .all-coach button, button.btn-coach, .coach-selection-btn, button[class*="coach"]');
           await coachButtons.nth(coach.index).click().catch(() => {});
           await page.waitForSelector('button.btn-seat:not([disabled])', { timeout: 2000 }).catch(() => {});
-          await page.waitForTimeout(150);
+          await page.waitForTimeout(120);
         }
 
         await dismissSweetAlertSafely(page);
@@ -949,69 +1192,19 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
 
           console.log(`   👉 Optimal cluster in Coach "${coach.name}": [${optimalSeats.map(s => s.title).join(', ')}] (Targeting ${Math.min(remainingNeeded, optimalSeats.length)} seat(s))`);
 
-          let anySuccessInRound = false;
-          const allSeatBtns = page.locator('button.btn-seat');
+          // Batch click + verify all target seats in ONE round-trip (fast path)
+          const result = await selectSeatsFast(page, optimalSeats);
 
-          for (const target of optimalSeats) {
-            if (remainingNeeded <= 0) break;
-
-            const targetBtn = allSeatBtns.nth(target.domIndex);
-            if (!(await targetBtn.isVisible().catch(() => false))) {
-              continue;
-            }
-
-            console.log(`   👉 Clicking seat: ${target.title}`);
-            await targetBtn.click({ timeout: 1500 }).catch(() => {});
-            await page.waitForTimeout(100);
-
-            // Check if SweetAlert appeared upon clicking seat
-            const seatAlert = await dismissSweetAlertSafely(page);
-            if (seatAlert) {
-              console.log(`   ⚠️ Portal Alert on seat ${target.title}: "${seatAlert}". Dismissed, trying next seat...`);
-              // Mark seat as booked and disabled in DOM so it won't be re-selected
-              await page.evaluate((domIdx) => {
-                const btns = document.querySelectorAll('button.btn-seat');
-                if (btns[domIdx]) {
-                  btns[domIdx].classList.add('seat-booked');
-                  btns[domIdx].disabled = true;
-                }
-              }, target.domIndex).catch(() => {});
-
-              // Do not abort the coach; proceed to next available seat
-              continue;
-            }
-
-            // Verify if seat is selected via DOM class or deduplicated cart inventory
-            let isNowSelected = false;
-            for (let w = 0; w < 4; w++) {
-              isNowSelected = await page.evaluate((domIdx) => {
-                const btns = document.querySelectorAll('button.btn-seat');
-                return btns[domIdx] ? (btns[domIdx].classList.contains('seat-selected') || btns[domIdx].classList.contains('selected')) : false;
-              }, target.domIndex).catch(() => false);
-              if (isNowSelected) break;
-              await page.waitForTimeout(80);
-            }
-
-            const currentCartSeats = await getUniqueSelectedSeatNames(page);
-            const isInCart = isNowSelected || currentCartSeats.includes(target.title) || currentCartSeats.some(s => s.endsWith(String(target.seatNumber)));
-
-            if (isInCart) {
-              console.log(`   ✅ Seat ${target.title} successfully locked in cart! (Cart: ${currentCartSeats.length}/${requestedSeatCount} [${currentCartSeats.join(', ')}])`);
-              remainingNeeded = Math.max(0, requestedSeatCount - currentCartSeats.length);
-              anySuccessInRound = true;
-            } else {
-              console.log(`   ⚠️ Seat ${target.title} did not register in cart. Marking booked and trying next seat...`);
-              await page.evaluate((domIdx) => {
-                const btns = document.querySelectorAll('button.btn-seat');
-                if (btns[domIdx]) {
-                  btns[domIdx].classList.add('seat-booked');
-                  btns[domIdx].disabled = true;
-                }
-              }, target.domIndex).catch(() => {});
-            }
+          for (const title of result.selectedTitles) {
+            console.log(`   ✅ Seat ${title} successfully locked in cart! (Cart: ${result.cartSize}/${requestedSeatCount})`);
+          }
+          for (const title of result.failedTitles) {
+            console.log(`   ⚠️ Seat ${title} unavailable (grabbed by another user). Trying next seat...`);
           }
 
-          if (!anySuccessInRound) {
+          remainingNeeded = Math.max(0, requestedSeatCount - result.cartSize);
+
+          if (result.selectedTitles.length === 0) {
             console.log(`   ⚠️ No additional seats could be secured in Coach "${coach.name}".`);
             coachExhausted = true;
           }
@@ -1094,7 +1287,7 @@ function rankCoachesIntelligently(coaches, remainingNeeded = 4) {
         console.log(`⚠️ Continue button status: visible=${isContinueVis}, enabled=${isContinueEnabled}`);
       }
 
-      console.log('\n🖥️ Seat selection completed successfully!');
+      console.log(`\n🖥️ Seat selection completed successfully at ${elapsed()}!`);
 
       if (shouldAutoUnselect) {
         console.log('\n⏳ Holding selected seats for 6 seconds for your visual verification...');
